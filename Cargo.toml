@@ -23,3 +23,6 @@ rcgen              = "0.13"  # crypto primitive: X.509 cert generation from Ed25
 rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }  # crypto primitive: TLS backend required by quinn
 rand               = "0.8"   # crypto primitive: CSPRNG for key generation
 hex                = "0.4"   # hex encoding for node IDs and keys
+
+[dev-dependencies]
+tempfile = "3"

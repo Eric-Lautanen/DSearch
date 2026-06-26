@@ -18,6 +18,7 @@ use cli::cmd::*;
 use node::roles::NodeRole;
 use node::server::Node;
 use proto::cert;
+use storage::Store;
 use tracing::{info, warn};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,10 +62,7 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
             eprintln!("Search not yet implemented (Phase 4)");
             std::process::exit(1);
         }
-        Commands::Record { .. } => {
-            eprintln!("Record management not yet implemented (Phase 3)");
-            std::process::exit(1);
-        }
+        Commands::Record { action } => cmd_record(action, &data_dir),
         Commands::Service { .. } => {
             eprintln!("Service management not yet implemented (Phase 9)");
             std::process::exit(1);
@@ -444,6 +442,111 @@ fn cmd_identity(action: IdentityAction, data_dir: &PathBuf) -> Result<(), Box<dy
                 println!("No identity found at {}", path.display());
             }
             Ok(())
+        }
+    }
+}
+
+fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db = storage::open_store(data_dir)?;
+    let config = config::load_config(data_dir)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    let store = Store::new(db, config.storage);
+
+    match action {
+        RecordAction::Get { id, output } => {
+            match store.get_record(&id)? {
+                Some(record) => {
+                    if output == "json" {
+                        println!("{}", serde_json::to_string_pretty(&record)?);
+                    } else {
+                        println!("ID:          {}", record.id);
+                        println!("Source URL:  {}", record.source_url);
+                        println!("Source Hash: {}", record.source_hash);
+                        println!("Schema:      {}", record.schema);
+                        println!("Tags:        {}", record.tags.join(", "));
+                        println!("Created At:  {}", record.created_at);
+                        println!("Expires At:  {}", record.expires_at);
+                        println!("Lifecycle:   {}", if store.is_pinned(&id)? { "pinned" } else { "ephemeral" });
+                        println!("Body:");
+                        println!("{}", record.body);
+                    }
+                }
+                None => {
+                    eprintln!("Record not found: {}", id);
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
+        RecordAction::List { schema, limit } => {
+            let records = store.list_records(schema.as_deref(), limit)?;
+            if records.is_empty() {
+                println!("No records found.");
+            } else {
+                println!("Records ({}):", records.len());
+                for r in &records {
+                    let pinned = if store.is_pinned(&r.id)? { " [pinned]" } else { "" };
+                    println!("  {}  schema={}  tags=[{}]  created={}  expires={}{}", 
+                        r.id, r.schema, r.tags.join(","), r.created_at, r.expires_at, pinned);
+                }
+            }
+            Ok(())
+        }
+        RecordAction::Pin { id } => {
+            if store.pin_record(&id)? {
+                println!("Record {} pinned.", id);
+            } else {
+                eprintln!("Record not found: {}", id);
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        RecordAction::Unpin { id } => {
+            if store.unpin_record(&id)? {
+                println!("Record {} unpinned.", id);
+            } else {
+                eprintln!("Record {} was not pinned.", id);
+            }
+            Ok(())
+        }
+        RecordAction::Delete { id } => {
+            if store.delete_record(&id)? {
+                println!("Record {} deleted.", id);
+            } else {
+                eprintln!("Record not found: {}", id);
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        RecordAction::Insert { file } => {
+            let json_str = std::fs::read_to_string(&file)
+                .map_err(|e| format!("read {}: {}", file.display(), e))?;
+            let record: crate::model::ContentRecord = serde_json::from_str(&json_str)
+                .map_err(|e| format!("parse record JSON: {}", e))?;
+            let result = store.insert_record(&record)?;
+            match result {
+                storage::records::InsertResult::Inserted => println!("Record {} inserted.", record.id),
+                storage::records::InsertResult::ReplacedNewer => println!("Record {} replaced older record with same source_hash.", record.id),
+                storage::records::InsertResult::SkippedOlder => println!("Record {} skipped (older than existing with same source_hash).", record.id),
+            }
+            Ok(())
+        }
+        RecordAction::Sweep => {
+            let (records, announcements) = store.sweep_once()?;
+            println!("Expiry sweep complete: removed {} records, {} announcements.", records, announcements);
+            Ok(())
+        }
+        RecordAction::Announce { id } => {
+            match store.get_record(&id)? {
+                Some(_record) => {
+                    eprintln!("Announce not yet implemented (Phase 5)");
+                    std::process::exit(1);
+                }
+                None => {
+                    eprintln!("Record not found: {}", id);
+                    std::process::exit(1);
+                }
+            }
         }
     }
 }

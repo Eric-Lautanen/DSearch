@@ -216,6 +216,13 @@ pub enum RecordAction {
     Unpin { id: String },
     /// Delete a record
     Delete { id: String },
+    /// Insert a record from a JSON file
+    Insert {
+        /// Path to JSON file containing the record
+        file: PathBuf,
+    },
+    /// Run expiry sweep (remove expired records)
+    Sweep,
     /// Announce a record
     Announce { id: String },
 }
