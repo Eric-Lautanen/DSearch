@@ -28,9 +28,14 @@ pub fn verify_record_signature(
     body: &[u8],
     created_at: &[u8],
     expires_at: &[u8],
+    scrape_source: &[u8],
+    refresh_policy: &[u8],
     sig: &Signature,
 ) -> VerifyResult {
-    if crate::trust::sign::verify_record_sig(verifying_key, id, source_url, source_hash, schema, tags, body, created_at, expires_at, sig) {
+    if crate::trust::sign::verify_record_sig(
+        verifying_key, id, source_url, source_hash, schema, tags, body,
+        created_at, expires_at, scrape_source, refresh_policy, sig,
+    ) {
         VerifyResult::ok()
     } else {
         VerifyResult::fail("ContentRecord signature verification failed")
@@ -48,7 +53,9 @@ pub fn verify_announcement_signature(
     expires_at: &[u8],
     sig: &Signature,
 ) -> VerifyResult {
-    if crate::trust::sign::verify_announcement_sig(verifying_key, record_id, source_hash, schema, tags, holder_addr, expires_at, sig) {
+    if crate::trust::sign::verify_announcement_sig(
+        verifying_key, record_id, source_hash, schema, tags, holder_addr, expires_at, sig,
+    ) {
         VerifyResult::ok()
     } else {
         VerifyResult::fail("Announcement signature verification failed")

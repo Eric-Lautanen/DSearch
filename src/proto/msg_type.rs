@@ -57,6 +57,7 @@ pub struct Handshake {
     pub version: u8,
     pub node_id: String,
     pub roles: Vec<String>,
+    #[serde(default)]
     pub capabilities: Vec<String>,
 }
 
@@ -65,6 +66,7 @@ pub struct HandshakeAck {
     pub version: u8,
     pub node_id: String,
     pub roles: Vec<String>,
+    #[serde(default)]
     pub capabilities: Vec<String>,
 }
 
@@ -94,14 +96,19 @@ pub struct NodeInfo {
     pub addr: String,
 }
 
+/// Wire-format Announce message.
+/// Matches the roadmap spec:
+///   { record_id, source_hash, schema, tags, holder_addr, expires_at, sig }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Announce {
     pub record_id: String,
     pub source_hash: String,
     pub schema: String,
+    #[serde(default)]
     pub tags: Vec<String>,
     pub holder_addr: String,
     pub expires_at: u64,
+    #[serde(default)]
     pub sig: String,
 }
 
@@ -113,6 +120,7 @@ pub struct AnnounceAck {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchQuery {
     pub query: String,
+    #[serde(default)]
     pub schema: Option<String>,
     pub limit: u32,
     pub ttl: u32,
@@ -124,6 +132,7 @@ pub struct SearchResult {
     pub id: String,
     pub title: String,
     pub schema: String,
+    #[serde(default)]
     pub tags: Vec<String>,
     pub holder_addr: String,
     pub score: f64,
@@ -149,6 +158,7 @@ pub struct PeerExchange {
 pub struct PeerInfo {
     pub id: String,
     pub addr: String,
+    #[serde(default)]
     pub roles: Vec<String>,
 }
 

@@ -11,6 +11,7 @@ mod api;
 mod service;
 mod ui;
 mod sanitize;
+mod model;
 
 use clap::Parser;
 use cli::cmd::*;
@@ -92,7 +93,7 @@ fn cmd_init(data_dir: &PathBuf, role: Option<&str>) -> Result<(), Box<dyn std::e
 
     let config_path = data_dir.join("config.toml");
     if !config_path.exists() {
-        let default_config = default_config_toml();
+        let default_config = config::default_config_toml();
         std::fs::write(&config_path, default_config)?;
         info!("Created default config.toml at {}", config_path.display());
     }
@@ -119,6 +120,12 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
     match action {
         NodeAction::Start { headless: _, role, port } => {
             std::fs::create_dir_all(data_dir)?;
+
+            // Validate config version before starting
+            if let Err(e) = config::load_config(data_dir) {
+                eprintln!("Config error: {}", e);
+                std::process::exit(1);
+            }
 
             let (signing_key, node_id, _cert_der, _key_der) = cert::load_or_generate_identity(data_dir)?;
 
@@ -168,8 +175,6 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
                     if shutdown_path.exists() {
                         info!("Shutdown signal file detected, initiating graceful shutdown");
                         let _ = std::fs::remove_file(&shutdown_path);
-                        // Send ourselves SIGINT / Ctrl+C equivalent
-                        // On Windows, we just break out of the loop
                         break;
                     }
                 }
@@ -194,7 +199,6 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
             Ok(())
         }
         NodeAction::Stop => {
-            // Read PID from node.pid file and send SIGTERM (Unix) or kill (Windows)
             let pid_path = data_dir.join("node.pid");
             if pid_path.exists() {
                 let pid_str = std::fs::read_to_string(&pid_path)?;
@@ -203,17 +207,13 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
                 
                 #[cfg(windows)]
                 {
-                    // On Windows, use the shutdown signal file mechanism
-                    // The running node watches for node.shutdown and exits gracefully
                     let shutdown_signal = data_dir.join("node.shutdown");
                     std::fs::write(&shutdown_signal, "stop")?;
                     println!("Stop signal sent to node (PID {}). Waiting for graceful shutdown...", pid);
                     
-                    // Wait up to 10 seconds for the process to exit
                     let mut exited = false;
                     for _ in 0..20 {
                         std::thread::sleep(std::time::Duration::from_millis(500));
-                        // Check if the PID is still running
                         let output = std::process::Command::new("tasklist")
                             .args(["/FI", &format!("PID eq {}", pid), "/NH"])
                             .output()?;
@@ -227,7 +227,6 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
                     if exited {
                         println!("Node (PID {}) stopped gracefully.", pid);
                     } else {
-                        // Fallback: force kill
                         let _ = std::process::Command::new("taskkill")
                             .args(["/PID", &pid.to_string(), "/F"])
                             .output();
@@ -372,17 +371,27 @@ fn cmd_config(action: ConfigAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
                 let contents = std::fs::read_to_string(&config_path)?;
                 println!("{}", contents);
             } else {
-                println!("No config.toml found. Run `dsearch init` first.");
+                // Show defaults if no config file exists
+                let defaults = config::default_config_toml();
+                println!("{}", defaults);
             }
             Ok(())
         }
-        ConfigAction::Set { .. } => {
-            println!("Config set: not yet implemented (Phase 2)");
+        ConfigAction::Set { key, value } => {
+            std::fs::create_dir_all(data_dir)?;
+            let mut cfg = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            config::set_config_value(&mut cfg, &key, &value)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            config::save_config(data_dir, &cfg)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            println!("Set {} = {}", key, value);
             Ok(())
         }
         ConfigAction::Reset => {
+            std::fs::create_dir_all(data_dir)?;
+            let default_config = config::default_config_toml();
             let config_path = data_dir.join("config.toml");
-            let default_config = default_config_toml();
             std::fs::write(&config_path, default_config)?;
             println!("Config reset to defaults.");
             Ok(())
@@ -437,47 +446,6 @@ fn cmd_identity(action: IdentityAction, data_dir: &PathBuf) -> Result<(), Box<dy
             Ok(())
         }
     }
-}
-
-fn default_config_toml() -> String {
-    r#"[node]
-role = "light"
-max_connections = 200
-min_protocol_version = 1
-ipv4 = true
-ipv6 = true
-
-[api]
-port = 7743
-
-[gateway]
-enabled = false
-bind = "0.0.0.0:7744"
-rate_limit_per_min = 60
-require_api_key = false
-
-[storage]
-quota_mb = 0
-quota_action = "evict_oldest"
-tier2_max_mb = 512
-
-[relay]
-bandwidth_limit_mbps = 100
-
-[scraper]
-default_interval_secs = 3600
-default_replicate = 0
-default_lifecycle = "ephemeral"
-
-[log]
-level = "info"
-output = "stderr"
-max_size_mb = 50
-rotate_count = 3
-
-[bootstrap]
-use_defaults = true
-"#.to_string()
 }
 
 fn default_bootstrap_toml() -> String {

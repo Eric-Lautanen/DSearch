@@ -1,6 +1,5 @@
 use ed25519_dalek::{SigningKey, Signature, Signer, Verifier, VerifyingKey};
 
-
 /// Canonical encoding: fields concatenated in struct-declaration order,
 /// each length-prefixed (u32 BE), UTF-8 for strings.
 /// This is the same framing discipline as the wire protocol.
@@ -15,7 +14,8 @@ pub fn canonical_encode_fields(fields: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Sign a ContentRecord. Covers all fields except `sig`.
-/// sign(id, source_url, source_hash, schema, tags, body, created_at, expires_at)
+/// sign(id, source_url, source_hash, schema, tags, body, created_at, expires_at,
+///      scrape_source, refresh_policy)
 pub fn sign_record(
     signing_key: &SigningKey,
     id: &[u8],
@@ -26,8 +26,13 @@ pub fn sign_record(
     body: &[u8],
     created_at: &[u8],
     expires_at: &[u8],
+    scrape_source: &[u8],
+    refresh_policy: &[u8],
 ) -> Signature {
-    let encoded = canonical_encode_fields(&[id, source_url, source_hash, schema, tags, body, created_at, expires_at]);
+    let encoded = canonical_encode_fields(&[
+        id, source_url, source_hash, schema, tags, body,
+        created_at, expires_at, scrape_source, refresh_policy,
+    ]);
     signing_key.sign(&encoded)
 }
 
@@ -42,9 +47,14 @@ pub fn verify_record_sig(
     body: &[u8],
     created_at: &[u8],
     expires_at: &[u8],
+    scrape_source: &[u8],
+    refresh_policy: &[u8],
     sig: &Signature,
 ) -> bool {
-    let encoded = canonical_encode_fields(&[id, source_url, source_hash, schema, tags, body, created_at, expires_at]);
+    let encoded = canonical_encode_fields(&[
+        id, source_url, source_hash, schema, tags, body,
+        created_at, expires_at, scrape_source, refresh_policy,
+    ]);
     verifying_key.verify(&encoded, sig).is_ok()
 }
 
@@ -79,6 +89,7 @@ pub fn verify_announcement_sig(
 }
 
 /// Compute record_id as Blake3 of canonical content fields.
+/// Includes: source_url, source_hash, schema, tags, body, created_at
 pub fn compute_record_id(
     source_url: &[u8],
     source_hash: &[u8],
@@ -107,9 +118,19 @@ mod tests {
         let sk = SigningKey::generate(&mut rng);
         let vk = sk.verifying_key();
 
-        let sig = sign_record(&sk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678");
-        assert!(verify_record_sig(&vk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", &sig));
-        assert!(!verify_record_sig(&vk, b"wrong", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", &sig));
+        let sig = sign_record(&sk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once");
+        assert!(verify_record_sig(&vk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once", &sig));
+        assert!(!verify_record_sig(&vk, b"wrong", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once", &sig));
+    }
+
+    #[test]
+    fn sign_verify_record_wrong_scrape_source() {
+        let mut rng = rand::rngs::OsRng;
+        let sk = SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+
+        let sig = sign_record(&sk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once");
+        assert!(!verify_record_sig(&vk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"api", b"once", &sig));
     }
 
     #[test]
@@ -128,5 +149,20 @@ mod tests {
         let a = canonical_encode_fields(&[b"hello", b"world"]);
         let b = canonical_encode_fields(&[b"hello", b"world"]);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn compute_record_id_deterministic() {
+        let a = compute_record_id(b"url", b"hash", b"schema", b"tags", b"body", b"1234");
+        let b = compute_record_id(b"url", b"hash", b"schema", b"tags", b"body", b"1234");
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn compute_source_hash_deterministic() {
+        let a = compute_source_hash(b"https://example.com/page");
+        let b = compute_source_hash(b"https://example.com/page");
+        assert_eq!(a, b);
+        assert_ne!(compute_source_hash(b"https://example.com/other"), a);
     }
 }
