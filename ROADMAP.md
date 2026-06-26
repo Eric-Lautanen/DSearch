@@ -53,6 +53,35 @@ session that has to behave correctly before the phase counts as done.
 Treat it as a gate: if the exit test doesn't pass, the phase isn't
 finished, regardless of how much code has been written.
 
+### Commit and push after every phase
+- Once a phase's exit test passes, `git add` / `git commit` with a
+  message naming the phase (e.g. `Phase 3: storage layer + exit test
+  passing`), then `git push` before starting the next phase's work.
+- Use the SSH remote (`git@github.com:...`), not HTTPS — confirm with
+  `git remote -v` and switch it with `git remote set-url origin
+  git@github.com:<org>/<repo>.git` if it's pointing at an `https://`
+  URL. SSH avoids interactive credential prompts that stall an
+  autonomous run.
+- Don't batch commits across multiple phases and don't leave passing
+  work uncommitted between sessions — each phase boundary is a commit
+  boundary, the same way it's an exit-test boundary.
+- If a later phase forces a fix to an earlier phase (per "Build order
+  is a gate" above), that fix gets its own commit too, separate from
+  the phase you're currently advancing.
+
+### This roadmap is a guide, not a contract
+- Everything above (phase order, exit tests, commit cadence, the
+  dependency rules) is in service of one goal: a working decentralized
+  search network. The roadmap is not the goal itself.
+- If something in this document turns out to conflict with that
+  goal — a spec detail that's actually unworkable, a phase boundary
+  that doesn't make sense once the code is in front of you, a "don't"
+  that's blocking a fix the mission needs — deviate from the doc
+  rather than from the mission. Use good judgment.
+- When deviating, leave a short note (commit message or comment) on
+  *why* the roadmap was wrong or didn't fit, so the discrepancy is
+  visible rather than silent.
+
 ---
 
 ## Core mental model
