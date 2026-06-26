@@ -72,21 +72,6 @@ impl Node {
         // Main accept loop
         tokio::spawn(async move {
             loop {
-                // Periodically write peers to file for CLI access
-                {
-                    let rt = routing_table.read().await;
-                    let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-                        serde_json::json!({
-                            "node_id": e.node_id,
-                            "addr": e.addr,
-                            "roles": e.roles,
-                            "last_seen": e.last_seen,
-                        })
-                    }).collect();
-                    let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
-                    let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
-                }
-
                 tokio::select! {
                     incoming = endpoint_ref.accept() => {
                         match incoming {
@@ -109,9 +94,6 @@ impl Node {
                         info!("Shutdown signal received, stopping accept loop");
                         break;
                     }
-                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-                        // Periodic peer file update happens above at top of loop
-                    }
                 }
             }
         });
@@ -120,6 +102,8 @@ impl Node {
     }
 
     /// Connect to a peer and perform handshake.
+    /// Spawns a persistent message-handling loop on the outbound stream
+    /// so the stream stays alive (not dropped after handshake).
     pub async fn connect_to_peer(&self, addr: SocketAddr) -> Result<quinn::Connection, Box<dyn std::error::Error + Send + Sync>> {
         let endpoint = self.endpoint.as_ref().ok_or("Endpoint not started")?;
         let conn = endpoint.connect(addr, "dsearch")?.await?;
@@ -137,6 +121,7 @@ impl Node {
         frame::write_frame(&mut send, &frame).await?;
 
         // Read HandshakeAck
+        let mut peer_node_id = String::new();
         if let Some(ack_frame) = frame::read_frame(&mut recv).await? {
             if ack_frame.msg_type == MsgType::HandshakeAck {
                 let ack: HandshakeAck = ack_frame.decode_payload()?;
@@ -158,28 +143,51 @@ impl Node {
                     roles: ack.roles.clone(),
                     last_seen: now_secs(),
                 };
+                peer_node_id = ack.node_id.clone();
                 self.routing_table.write().await.insert(entry);
-                info!("Peer {} added to routing table", &ack.node_id[..8.min(ack.node_id.len())]);
+                info!("Peer {} added to routing table (outbound)", &ack.node_id[..8.min(ack.node_id.len())]);
 
                 // Write peers file immediately
                 self.write_peers_file().await;
             }
         }
 
+        // Keep the outbound stream alive by spawning a persistent message loop,
+        // exactly like the inbound path does. Without this, send/recv drop
+        // when connect_to_peer returns, closing the stream and causing the
+        // remote side to immediately remove us from its routing table.
+        let routing_table = self.routing_table.clone();
+        let running = self.running.clone();
+        let data_dir = self.data_dir.clone();
+        let peer_id = peer_node_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle_messages(&mut recv, &mut send, &routing_table, &peer_id, running, &data_dir).await {
+                debug!("Outbound message loop ended for {}: {}", &peer_id[..8.min(peer_id.len())], e);
+            }
+        });
+
         Ok(conn)
     }
 
-    /// Graceful shutdown: send Goodbye to all peers, close endpoint.
+    /// Graceful shutdown: set running=false so handle_messages loops send
+    /// Goodbye, then close the endpoint (which tears down remaining streams).
     pub async fn stop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
-
-        // Log how many peers we're disconnecting from
         let peer_count = {
             let rt = self.routing_table.read().await;
             rt.list().len()
         };
         if peer_count > 0 {
-            info!("Sending Goodbye to {} peer(s)...", peer_count);
+            info!("Shutting down with {} peer(s) connected", peer_count);
+        }
+
+        // Signal all message loops to send Goodbye and exit.
+        // Must happen *before* we close the endpoint, or the streams
+        // are torn down before the Goodbye can be written.
+        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        // Give the message loops a moment to send their Goodbye frames
+        if peer_count > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
 
         if let Some(ref endpoint) = self.endpoint {
@@ -256,22 +264,11 @@ async fn handle_connection(
                 last_seen: now_secs(),
             };
             routing_table.write().await.insert(entry);
-            info!("Peer {} connected", &hs.node_id[..8.min(hs.node_id.len())]);
+            info!("Peer {} connected (inbound, added to routing table)", &hs.node_id[..8.min(hs.node_id.len())]);
 
-            // Write peers file
-            {
-                let rt = routing_table.read().await;
-                let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-                    serde_json::json!({
-                        "node_id": e.node_id,
-                        "addr": e.addr,
-                        "roles": e.roles,
-                        "last_seen": e.last_seen,
-                    })
-                }).collect();
-                let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
-                let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
-            }
+            // Write peers file immediately after inbound insert
+            write_peers_file(&routing_table, &data_dir).await;
+            info!("Wrote peers.json after inbound connect");
 
             // Handle subsequent messages
             let rt = routing_table.clone();
@@ -296,15 +293,53 @@ async fn handle_messages(
     running: Arc<std::sync::atomic::AtomicBool>,
     data_dir: &std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    loop {
-        if !running.load(std::sync::atomic::Ordering::SeqCst) {
-            let goodbye = Goodbye { reason: "shutdown".to_string() };
-            let goodbye_frame = Frame::new(MsgType::Goodbye, serde_json::to_vec(&goodbye)?);
-            frame::write_frame(send, &goodbye_frame).await?;
-            break;
-        }
+    // Cleanup runs on every exit path — clean close, explicit Goodbye,
+    // or connection error. Without this, a hard connection close (e.g.
+    // endpoint.close()) returns Err from read_frame, and the ? operator
+    // would skip the cleanup that only the None arm did.
+    let result = handle_messages_inner(recv, send, routing_table, peer_node_id, running, data_dir).await;
 
-        match frame::read_frame(recv).await? {
+    // Always remove peer and update peers.json, regardless of exit reason
+    routing_table.write().await.remove(peer_node_id);
+    write_peers_file(routing_table, data_dir).await;
+
+    match &result {
+        Ok(()) => info!("Peer {} disconnected (clean)", &peer_node_id[..8.min(peer_node_id.len())]),
+        Err(e) => info!("Peer {} disconnected (error: {})", &peer_node_id[..8.min(peer_node_id.len())], e),
+    }
+
+    result
+}
+
+async fn handle_messages_inner(
+    recv: &mut quinn::RecvStream,
+    send: &mut quinn::SendStream,
+    routing_table: &Arc<RwLock<RoutingTable>>,
+    peer_node_id: &str,
+    running: Arc<std::sync::atomic::AtomicBool>,
+    data_dir: &std::path::PathBuf,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    loop {
+        // Use select! so that a shutdown signal (running=false) is detected
+        // even while we're waiting for the next frame. Without this, the
+        // read_frame call blocks forever if the remote side hasn't sent
+        // anything and we're just idling.
+        let frame_result = tokio::select! {
+            f = frame::read_frame(recv) => f,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
+                // Timed out — check running flag and loop back
+                if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                    let goodbye = Goodbye { reason: "shutdown".to_string() };
+                    let goodbye_frame = Frame::new(MsgType::Goodbye, serde_json::to_vec(&goodbye)?);
+                    frame::write_frame(send, &goodbye_frame).await?;
+                    info!("Sent Goodbye to {} (shutdown)", &peer_node_id[..8.min(peer_node_id.len())]);
+                    return Ok(());
+                }
+                continue;
+            }
+        };
+
+        match frame_result? {
             Some(f) => {
                 match f.msg_type {
                     MsgType::Ping => {
@@ -328,20 +363,7 @@ async fn handle_messages(
                     MsgType::Goodbye => {
                         let gb: Goodbye = f.decode_payload()?;
                         info!("Peer {} sent Goodbye: {}", &peer_node_id[..8.min(peer_node_id.len())], gb.reason);
-                        routing_table.write().await.remove(peer_node_id);
-                        // Update peers file
-                        let rt = routing_table.read().await;
-                        let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-                            serde_json::json!({
-                                "node_id": e.node_id,
-                                "addr": e.addr,
-                                "roles": e.roles,
-                                "last_seen": e.last_seen,
-                            })
-                        }).collect();
-                        let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
-                        let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
-                        break;
+                        return Ok(());
                     }
                     _ => {
                         debug!("Ignoring unknown message type: {:?}", f.msg_type);
@@ -350,23 +372,28 @@ async fn handle_messages(
             }
             None => {
                 info!("Stream from {} closed", &peer_node_id[..8.min(peer_node_id.len())]);
-                routing_table.write().await.remove(peer_node_id);
-                let rt = routing_table.read().await;
-                let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-                    serde_json::json!({
-                        "node_id": e.node_id,
-                        "addr": e.addr,
-                        "roles": e.roles,
-                        "last_seen": e.last_seen,
-                    })
-                }).collect();
-                let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
-                let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
-                break;
+                return Ok(());
             }
         }
     }
-    Ok(())
+}
+
+/// Helper: write current routing table to peers.json.
+async fn write_peers_file(
+    routing_table: &Arc<RwLock<RoutingTable>>,
+    data_dir: &std::path::PathBuf,
+) {
+    let rt = routing_table.read().await;
+    let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
+        serde_json::json!({
+            "node_id": e.node_id,
+            "addr": e.addr,
+            "roles": e.roles,
+            "last_seen": e.last_seen,
+        })
+    }).collect();
+    let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
+    let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
 }
 
 fn abs_diff(a: u8, b: u8) -> u8 {

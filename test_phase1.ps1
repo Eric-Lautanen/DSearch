@@ -115,11 +115,26 @@ Write-Host "Node A started (PID: $($procA.Id))"
 # Step 6: Check peers list on both nodes
 Write-Host "`n--- Step 6: Check peers list ---" -ForegroundColor Yellow
 
-# Wait a bit more for handshake to complete
-Start-Sleep -Seconds 3
+# Poll for up to 10 seconds — the inbound handler is async and may need
+# a moment to complete the handshake + write peers.json
+$foundPeerA = $false
+$foundPeerB = $false
+for ($attempt = 0; $attempt -lt 10; $attempt++) {
+    Start-Sleep -Seconds 1
 
-$peersA = $null
-$peersB = $null
+    if (Test-Path "$testDirA\peers.json") {
+        $peersA = Get-Content "$testDirA\peers.json" -ErrorAction SilentlyContinue
+        if ($peersA -match "node_id") { $foundPeerA = $true }
+    }
+    if (Test-Path "$testDirB\peers.json") {
+        $peersB = Get-Content "$testDirB\peers.json" -ErrorAction SilentlyContinue
+        if ($peersB -match "node_id") { $foundPeerB = $true }
+    }
+
+    if ($foundPeerA -and $foundPeerB) { break }
+}
+
+# Show final state
 if (Test-Path "$testDirA\peers.json") {
     $peersA = Get-Content "$testDirA\peers.json" -ErrorAction SilentlyContinue
     Write-Host "Node A peers.json:"
@@ -136,12 +151,31 @@ $peersListA = & $dsearchExe peers list --data-dir $testDirA 2>&1 | Out-String
 Write-Host "Node A peers list (CLI):"
 Write-Host $peersListA
 
-$foundPeer = $false
-if ($peersA -and ($peersA -match "node_id")) {
-    Write-Host "[OK] Node A sees peers in peers.json" -ForegroundColor Green
-    $foundPeer = $true
+# Handshake must be bidirectional: the dialer (A) recording the peer it
+# connected to is necessary but not sufficient — the listener (B) has to
+# record the inbound connection too, or routing/gossip in later phases
+# breaks for anyone who didn't dial first.
+$foundPeerA = $peersA -and ($peersA -match "node_id")
+$foundPeerB = $peersB -and ($peersB -match "node_id")
+
+if ($foundPeerA) {
+    Write-Host "[OK] Node A (dialer) sees Node B in peers.json" -ForegroundColor Green
 } else {
-    Write-Host "[WARN] Node A peers.json empty or missing (may need more time)" -ForegroundColor Yellow
+    Write-Host "[FAIL] Node A (dialer) does not see Node B in peers.json" -ForegroundColor Red
+}
+
+if ($foundPeerB) {
+    Write-Host "[OK] Node B (listener) sees Node A in peers.json" -ForegroundColor Green
+} else {
+    Write-Host "[FAIL] Node B (listener) does not see Node A in peers.json - inbound connections are not being recorded as peers" -ForegroundColor Red
+}
+
+$foundPeer = $foundPeerA -and $foundPeerB
+if (-not $foundPeer) {
+    Write-Host "[FAIL] Two-node handshake is not bidirectional - aborting" -ForegroundColor Red
+    Stop-Process -Id $procA.Id -Force -ErrorAction SilentlyContinue
+    Stop-Process -Id $procB.Id -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 
 # Step 7: Stop Node A gracefully using `dsearch node stop`
@@ -168,19 +202,25 @@ if ($nodeBLog -match "Goodbye" -or $nodeBLog -match "removed" -or $nodeBLog -mat
     Write-Host "[OK] Node B detected Node A disconnect cleanly" -ForegroundColor Green
     $cleanDisconnect = $true
 } else {
-    Write-Host "[WARN] No explicit clean disconnect detected in Node B log" -ForegroundColor Yellow
-    Write-Host "       This may be OK if the stream closure was detected (not a panic/timeout)" -ForegroundColor Yellow
+    Write-Host "[FAIL] No explicit clean disconnect detected in Node B log" -ForegroundColor Red
+    # Don't exit yet — the peers.json check below is the hard gate.
+    # But this is a real FAIL, not a WARN: a node that doesn't log
+    # disconnects is a problem even if the routing table is correct.
 }
 
 # Check that Node B did NOT panic
 if ($nodeBLog -match "panic" -or $nodeBLog -match "PANIC") {
     Write-Host "[FAIL] Node B panicked when Node A disconnected!" -ForegroundColor Red
+    Stop-Process -Id $procB.Id -Force -ErrorAction SilentlyContinue
     exit 1
 } else {
     Write-Host "[OK] Node B did not panic on peer disconnect" -ForegroundColor Green
 }
 
-# Check Node B's peers.json — peer should be removed after disconnect
+# Check Node B's peers.json — peer MUST be removed after disconnect.
+# This is the hard gate: B had A as a peer (confirmed in Step 6),
+# and now B must have removed it. An empty list after a previously
+# non-empty one is the real evidence of clean disconnect handling.
 Start-Sleep -Seconds 2
 if (Test-Path "$testDirB\peers.json") {
     $peersBAfter = Get-Content "$testDirB\peers.json" -ErrorAction SilentlyContinue
@@ -188,9 +228,31 @@ if (Test-Path "$testDirB\peers.json") {
     Write-Host $peersBAfter
     if ($peersBAfter -match "\[\s*\]" -or $peersBAfter -eq "[]") {
         Write-Host "[OK] Node B's peer list is empty after disconnect (peer removed)" -ForegroundColor Green
+        $cleanDisconnect = $true
     } elseif ($peersBAfter -match "node_id") {
-        Write-Host "[WARN] Node B still shows a peer in peers.json (may need more time for cleanup)" -ForegroundColor Yellow
+        Write-Host "[FAIL] Node B still shows a peer in peers.json after disconnect - not removed" -ForegroundColor Red
+        Stop-Process -Id $procB.Id -Force -ErrorAction SilentlyContinue
+        exit 1
     }
+}
+
+# Also check Node A's peers.json — A should have removed B too
+# (now that A has a handle_messages loop that detects disconnects)
+if (Test-Path "$testDirA\peers.json") {
+    $peersAAfter = Get-Content "$testDirA\peers.json" -ErrorAction SilentlyContinue
+    Write-Host "Node A peers.json after disconnect:"
+    Write-Host $peersAAfter
+    if ($peersAAfter -match "\[\s*\]" -or $peersAAfter -eq "[]") {
+        Write-Host "[OK] Node A's peer list is empty after disconnect (peer removed)" -ForegroundColor Green
+    } elseif ($peersAAfter -match "node_id") {
+        Write-Host "[WARN] Node A still shows a peer in peers.json after disconnect" -ForegroundColor Yellow
+    }
+}
+
+if (-not $cleanDisconnect) {
+    Write-Host "[FAIL] No evidence of clean disconnect" -ForegroundColor Red
+    Stop-Process -Id $procB.Id -Force -ErrorAction SilentlyContinue
+    exit 1
 }
 
 # Step 8: Stop Node B
@@ -270,13 +332,13 @@ Write-Host "Bootstrap config: OK" -ForegroundColor Green
 Write-Host "Config show: OK" -ForegroundColor Green
 Write-Host "Role list: OK" -ForegroundColor Green
 if ($foundPeer) {
-    Write-Host "Two-node handshake: OK" -ForegroundColor Green
+    Write-Host "Two-node handshake (bidirectional): OK" -ForegroundColor Green
 } else {
-    Write-Host "Two-node handshake: NEEDS MANUAL CHECK (peers.json may need more time)" -ForegroundColor Yellow
+    Write-Host "Two-node handshake (bidirectional): FAIL" -ForegroundColor Red
 }
 if ($cleanDisconnect) {
     Write-Host "Clean disconnect: OK" -ForegroundColor Green
 } else {
-    Write-Host "Clean disconnect: NEEDS MANUAL CHECK (no panic = pass)" -ForegroundColor Yellow
+    Write-Host "Clean disconnect: FAIL" -ForegroundColor Red
 }
 Write-Host "`n=== Phase 1 Exit Test Complete ===" -ForegroundColor Cyan

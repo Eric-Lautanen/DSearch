@@ -53,6 +53,36 @@ session that has to behave correctly before the phase counts as done.
 Treat it as a gate: if the exit test doesn't pass, the phase isn't
 finished, regardless of how much code has been written.
 
+### Exit tests hard-fail, and check both sides of anything two-party
+- Every assertion in an exit test is either a real check (the script
+  exits non-zero when it fails) or it isn't a check at all — delete it
+  or fix it. A `WARN` / "may need more time" / "needs manual check"
+  branch that still lets the script reach its green summary is a
+  silent pass: it looks like verification but lets a broken phase
+  report itself as done. If a condition is worth checking, it's worth
+  failing on.
+- Any time a phase introduces two parties exchanging state — dialer
+  and listener, client and server, writer and reader, publisher and
+  subscriber, request and response, add and remove — the exit test
+  must assert the result from **both** parties' point of view, not
+  just whichever side was easiest to script first. "A sees B" and "B
+  sees A" are two different assertions; passing one says nothing about
+  the other. The failure mode to design against: it's natural to write
+  (and test) the side you're actively coding against, so the
+  unexercised side quietly ships broken and doesn't surface until a
+  later phase depends on it.
+- When in doubt, write down both directions explicitly in the exit
+  test even if they look redundant — redundant-looking assertions are
+  exactly what catch this class of bug.
+- The exit test encodes the spec; the code does not get a vote. If a
+  test fails and the code "looks" like it should be working, the
+  default assumption is the code is wrong, not the test. Loosening an
+  assertion (turning a `FAIL` back into a `WARN`, widening a match,
+  adding a sleep to "give it more time") to make a failing test pass
+  is not a fix — it's deleting the evidence that something is broken.
+  Only weaken a check if the spec itself was actually wrong, and say
+  so explicitly when it happens.
+
 ### Commit and push after every phase
 - Once a phase's exit test passes, `git add` / `git commit` with a
   message naming the phase (e.g. `Phase 3: storage layer + exit test
