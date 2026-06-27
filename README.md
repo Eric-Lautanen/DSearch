@@ -15,8 +15,8 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 | 5 | Scraper + announcement + dedup | ✅ Complete |
 | 6 | Sanitization | ✅ Complete |
 | 7 | Agent API + CLI | ✅ Complete |
-| 8 | First-run + UI | ⬜ Pending |
-| 9 | Hardening + service | ⬜ Pending |
+| 8 | First-run + UI | ✅ Complete |
+| 9 | Hardening + service | ✅ Complete |
 
 ## Phase 1 — Core networking + identity
 
@@ -97,6 +97,35 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 - `dsearch node status` now queries the live API
 - 110 unit tests passing + Phase 7 exit test (two-node, port auto-increment, all routes, CLI/API JSON parity)
 
+## Phase 8 — First-run + UI
+
+- egui 0.34 desktop UI with `eframe` runtime
+- First-run wizard: data dir selection → identity generation → role picker → bootstrap connect
+- UI and CLI onboarding converge on identical on-disk state (`identity.key`, `node.crt`, `config.toml`, `bootstrap.toml`)
+- Settings panel: all config keys, data dir (clickable), identity, gateway keys, scrapers, bootstrap peers
+- Status bar: role, peer count, record count, Tier 2 size, bandwidth
+- Tray icon (`tray-icon` crate): status dot, open UI, pause/resume node, quit
+- `--headless` flag for running without UI
+- 41-check exit test covering init convergence, onboarding parity, settings data verification, tray wiring, and node start routing
+
+## Phase 9 — Hardening + service
+
+- **Connection pool cap** — default 200 QUIC connections, configurable via `node.max_connections`
+- **Bounded Tokio channels** — capacity 256 for backpressure in node accept loop
+- **DHT dead-peer pruning** — `prune_stale()` removes peers older than `PEER_STALE_SECS`, `prune_dead_peers()` uses default threshold
+- **Peer reputation system** (`src/trust/reputation.rs`) — `ReputationTable` with penalty tracking, 24h linear decay, manual-only bans, 8 unit tests
+- **Sybil resistance PoW** (`src/trust/pow.rs`) — `mine_pow()` / `verify_pow()` with configurable difficulty, 6 unit tests
+- **Scraper subprocess isolation** (`src/scraper/sandbox.rs`) — `SandboxConfig` with path/namespace restrictions, `spawn_scraper_process` for isolated execution
+- **Jittered re-announce** (`src/node/announce.rs`) — `jittered_reannounce_delay()` spreads pinned-record re-announcements with random jitter to avoid announcement storms
+- **Relay bandwidth accounting** (`src/node/relay.rs`) — `RelayBandwidthAccount` with per-peer tracking, persisted across restarts via save/load
+- **Search result cache** (`src/search/cache.rs`) — TTL-based cache with capacity eviction, prevents repeat fan-out on identical queries
+- **Tier 2 write-rate limiter** (`src/storage/tier2_limiter.rs`) — per-peer rate limiting for announcement churn, independent of size cap
+- **Concurrent query cap** — `node.max_concurrent_queries` config (default 50) prevents saturation from query volume
+- **`dsearch doctor`** (`src/doctor/mod.rs`) — 6 categories (Identity, Storage, Network, API, Config, Service), real checks, `--output json` support
+- **Service management** (`src/service/install.rs`) — `dsearch service install/enable/disable/status/uninstall` with real OS registration: systemd (Linux), launchd (macOS), Windows Service
+- **Idle memory** — 14.4 MB measured (well under 50 MB target)
+- 140 unit tests passing + 16-check Phase 9 exit test
+
 ## Quick Start
 
 ```bash
@@ -130,4 +159,26 @@ dsearch scraper run my-job
 
 # Announce a record
 dsearch record announce <id>
+
+# Health check
+dsearch doctor
+
+# Install as a system service
+dsearch service install --headless
+dsearch service enable
+dsearch service status
 ```
+
+## Test Suite
+
+| Phase | Exit Test | Unit Tests |
+|-------|-----------|------------|
+| 1 | Two-node handshake + clean disconnect | — |
+| 2 | Config round-trip, future version rejected, sign/verify | 9 model + 6 config + 3 migration + 6 sign |
+| 3 | Record CRUD, dedup, expiry sweep, pin/unpin | 60 total |
+| 4 | 15 query language features + JSON output | 84 total |
+| 5 | Scraper job add/run, dedup, announce, sanitization | 99 total |
+| 6 | 14 sanitization checks (control chars, BOM, size limits) | 110 total |
+| 7 | Two-node, all API routes, CLI/API JSON parity, gateway keys | 110 total |
+| 8 | 41 checks (init convergence, onboarding parity, settings, tray) | 140 total |
+| 9 | 16 checks (doctor, service, pool cap, reputation, PoW, cache, limiter, sandbox, memory) | 140 total |
