@@ -70,10 +70,7 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
             eprintln!("Service management not yet implemented (Phase 9)");
             std::process::exit(1);
         }
-        Commands::Tray { .. } => {
-            eprintln!("Tray not yet implemented (Phase 8)");
-            std::process::exit(1);
-        }
+        Commands::Tray { action } => cmd_tray(action, &data_dir),
         Commands::Config { action } => cmd_config(action, &data_dir),
         Commands::Identity { action } => cmd_identity(action, &data_dir),
         Commands::Scraper { action } => cmd_scraper(action, &data_dir).await,
@@ -96,9 +93,28 @@ fn cmd_init(data_dir: &PathBuf, role: Option<&str>) -> Result<(), Box<dyn std::e
 
     let config_path = data_dir.join("config.toml");
     if !config_path.exists() {
-        let default_config = config::default_config_toml();
-        std::fs::write(&config_path, default_config)?;
+        // Build default config with the specified role baked in
+        let mut config = config::DsearchConfig::default();
+        if let Some(role_str) = role {
+            config.node.role = role_str.to_string();
+        }
+        // Use default_config_toml which appends [meta] config_version,
+        // but we need the role set — so write via save_config then append meta
+        let toml_str = toml::to_string_pretty(&config)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
+        let full_config = format!("{}\n[meta]\nconfig_version = {}\n", toml_str.trim_end(), config::CURRENT_CONFIG_VERSION);
+        std::fs::write(&config_path, full_config)?;
         info!("Created default config.toml at {}", config_path.display());
+    } else if let Some(role_str) = role {
+        // Config already exists — just update the role
+        if let Ok(mut config) = config::load_config(data_dir) {
+            config.node.role = role_str.to_string();
+            // Re-save preserving meta section
+            let toml_str = toml::to_string_pretty(&config)
+                .map_err(|e| format!("Failed to serialize config: {}", e))?;
+            let full_config = format!("{}\n[meta]\nconfig_version = {}\n", toml_str.trim_end(), config::CURRENT_CONFIG_VERSION);
+            std::fs::write(&config_path, full_config)?;
+        }
     }
 
     let bootstrap_path = data_dir.join("bootstrap.toml");
@@ -121,7 +137,7 @@ fn cmd_init(data_dir: &PathBuf, role: Option<&str>) -> Result<(), Box<dyn std::e
 
 async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
-        NodeAction::Start { headless: _, role, port } => {
+        NodeAction::Start { headless, role, port } => {
             std::fs::create_dir_all(data_dir)?;
 
             if let Err(e) = config::load_config(data_dir) {
@@ -193,28 +209,57 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
             let pid_path = data_dir.join("node.pid");
             std::fs::write(&pid_path, std::process::id().to_string())?;
 
-            // Watch for shutdown signal file (for `node stop` on Windows)
-            let shutdown_path = data_dir.join("node.shutdown");
-            let _data_dir_clone = data_dir.clone();
-            let shutdown_watcher = tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-                    if shutdown_path.exists() {
-                        info!("Shutdown signal file detected, initiating graceful shutdown");
-                        let _ = std::fs::remove_file(&shutdown_path);
-                        break;
+            if headless {
+                // Headless mode: wait for Ctrl+C or shutdown signal
+                let shutdown_path = data_dir.join("node.shutdown");
+                let shutdown_watcher = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if shutdown_path.exists() {
+                            info!("Shutdown signal file detected, initiating graceful shutdown");
+                            let _ = std::fs::remove_file(&shutdown_path);
+                            break;
+                        }
+                    }
+                });
+
+                println!("Node running (headless). Press Ctrl+C to stop.");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        info!("Ctrl+C received, shutting down...");
+                    }
+                    _ = shutdown_watcher => {
+                        info!("Stop signal received, shutting down...");
                     }
                 }
-            });
+            } else {
+                // UI mode: launch the egui UI
+                // The node is already running in the tokio runtime.
+                // eframe::run_native blocks, so we launch it from a new thread
+                // while the tokio runtime continues on this thread.
+                let ui_data_dir = data_dir.clone();
+                let shutdown_path = data_dir.join("node.shutdown");
 
-            println!("Node running. Press Ctrl+C to stop.");
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    info!("Ctrl+C received, shutting down...");
-                }
-                _ = shutdown_watcher => {
-                    info!("Stop signal received, shutting down...");
-                }
+                // Spawn a task to watch for shutdown signals
+                let shutdown_watcher = tokio::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if shutdown_path.exists() {
+                            info!("Shutdown signal file detected, initiating graceful shutdown");
+                            let _ = std::fs::remove_file(&shutdown_path);
+                            break;
+                        }
+                    }
+                });
+
+                // Run the UI on the main thread (eframe requires the main thread on some platforms)
+                // We need to exit the tokio context first, then run eframe.
+                // The simplest approach: spawn the node work in background and run eframe here.
+                // Since we're already inside #[tokio::main], we use a separate thread for eframe.
+                let _ = shutdown_watcher;
+
+                // Launch the UI — this blocks until the window closes
+                ui::run_ui(ui_data_dir)?;
             }
 
             // Clean up PID file
@@ -1073,4 +1118,17 @@ fn default_bootstrap_toml() -> String {
 
 use_defaults = true
 "#.to_string()
+}
+
+fn cmd_tray(action: TrayAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match action {
+        TrayAction::Start => {
+            ui::run_ui(data_dir.clone())?;
+            Ok(())
+        }
+        TrayAction::Stop => {
+            println!("Tray stop: not yet implemented (requires running node)");
+            Ok(())
+        }
+    }
 }

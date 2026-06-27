@@ -11,7 +11,7 @@ blake3             = "1.8.5"
 ed25519-dalek      = { version = "2.2.0", features = ["pkcs8", "rand_core"] }
 serde              = { version = "1", features = ["derive"] }
 serde_json         = "1"
-eframe             = "0.34.2"
+eframe             = { version = "0.34.2", default-features = false, features = ["default_fonts", "glow"] }  # glow (OpenGL) renderer — lighter than wgpu, per Phase 8 resource target
 tray-icon          = "0.19"
 toml               = "0.8"
 dirs-next          = "2"
@@ -23,6 +23,7 @@ rcgen              = "0.13"  # crypto primitive: X.509 cert generation from Ed25
 rustls             = { version = "0.23", default-features = false, features = ["ring", "std"] }  # crypto primitive: TLS backend required by quinn
 rand               = "0.8"   # crypto primitive: CSPRNG for key generation
 hex                = "0.4"   # hex encoding for node IDs and keys
+image              = { version = "0.25", default-features = false, features = ["png"] }  # PNG decoding for tray icon — avoids hand-rolling PNG inflate
 
 [dev-dependencies]
 tempfile = "3"
