@@ -143,16 +143,11 @@ impl OnboardingState {
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
                 if ui.button("Generate Identity →").clicked() {
-                    if let Ok((signing_key, node_id, cert_der, _key_der)) =
+                    if let Ok((signing_key, node_id, cert_der, key_der)) =
                         crate::proto::cert::generate_identity()
                     {
                         std::fs::create_dir_all(&self.data_dir).ok();
-                        if crate::proto::cert::save_identity(&self.data_dir, &signing_key, &cert_der).is_ok() {
-                            let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519);
-                            if let Ok(kp) = key_pair {
-                                let tls_der = kp.serialize_der();
-                                std::fs::write(self.data_dir.join("identity.tls"), &tls_der).ok();
-                            }
+                        if crate::proto::cert::save_identity(&self.data_dir, &signing_key, &cert_der, &key_der).is_ok() {
                             self.node_id = node_id;
                             self.identity_generated = true;
                         }

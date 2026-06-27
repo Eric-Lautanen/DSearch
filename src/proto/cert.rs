@@ -1,29 +1,45 @@
 use ed25519_dalek::{SigningKey, VerifyingKey};
+use ed25519_dalek::pkcs8::EncodePrivateKey;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use std::path::Path;
 
-/// Generate an Ed25519 keypair and derive a self-signed TLS certificate.
+/// Generate an Ed25519 keypair and derive a self-signed TLS certificate
+/// using the **same** key for both identity signing and TLS.
 /// Returns (signing_key, node_id_hex, cert_der, key_pkcs8_der).
 pub fn generate_identity() -> Result<(SigningKey, String, Vec<u8>, Vec<u8>), CertError> {
     let mut rng = rand::rngs::OsRng;
     let signing_key = SigningKey::generate(&mut rng);
     let node_id = node_id_from_pubkey(&signing_key.verifying_key());
 
-    // Generate a fresh keypair for the TLS cert (rcgen needs its own KeyPair)
-    let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)
-        .map_err(|e| CertError::Generation(e.to_string()))?;
+    let (cert_der, key_der) = make_cert_and_key(&signing_key, &node_id)?;
+
+    Ok((signing_key, node_id, cert_der, key_der))
+}
+
+/// Build a self-signed TLS cert + PKCS#8 private key DER from the signing key.
+/// Uses the same Ed25519 keypair for both the certificate and TLS,
+/// so the cert's public key always matches the private key.
+fn make_cert_and_key(signing_key: &SigningKey, node_id: &str) -> Result<(Vec<u8>, Vec<u8>), CertError> {
+    // Get PKCS#8 DER from the signing key (ed25519-dalek pkcs8 feature)
+    let pkcs8_doc = signing_key.to_pkcs8_der()
+        .map_err(|e| CertError::Generation(format!("PKCS#8 encode: {}", e)))?;
+    let pkcs8_bytes = pkcs8_doc.as_bytes();
+
+    // Build an rcgen KeyPair from the PKCS#8 DER — this ensures the rcgen
+    // KeyPair uses the same Ed25519 key as our signing key.
+    let key_pair = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
+        &PrivatePkcs8KeyDer::from(pkcs8_bytes.to_vec()),
+        &rcgen::PKCS_ED25519,
+    ).map_err(|e| CertError::Generation(format!("rcgen KeyPair from PKCS#8: {}", e)))?;
 
     let mut params = rcgen::CertificateParams::default();
     params.distinguished_name.push(rcgen::DnType::CommonName, "dsearch");
-    params.subject_alt_names.push(rcgen::SanType::URI(rcgen::Ia5String::try_from(node_id.clone())
+    params.subject_alt_names.push(rcgen::SanType::URI(rcgen::Ia5String::try_from(node_id.to_string())
         .map_err(|e| CertError::Generation(format!("invalid SAN URI: {}", e)))?));
     let cert = params.self_signed(&key_pair)
         .map_err(|e| CertError::Generation(e.to_string()))?;
 
-    let cert_der = cert.der().to_vec();
-    let key_der = key_pair.serialize_der();
-
-    Ok((signing_key, node_id, cert_der, key_der))
+    Ok((cert.der().to_vec(), key_pair.serialize_der()))
 }
 
 /// Derive node_id as Blake3 hex of the Ed25519 public key bytes.
@@ -32,10 +48,11 @@ pub fn node_id_from_pubkey(verifying_key: &VerifyingKey) -> String {
     blake3::hash(&pubkey_bytes).to_hex().to_string()
 }
 
-/// Save identity key and cert to data_dir.
+/// Save identity key, TLS key, and cert to data_dir.
 /// We store the raw Ed25519 secret key bytes (32 bytes) as identity.key,
+/// the PKCS#8 TLS private key as identity.tls,
 /// and the TLS cert DER as node.crt.
-pub fn save_identity(data_dir: &Path, signing_key: &SigningKey, cert_der: &[u8]) -> Result<(), CertError> {
+pub fn save_identity(data_dir: &Path, signing_key: &SigningKey, cert_der: &[u8], key_der: &[u8]) -> Result<(), CertError> {
     std::fs::create_dir_all(data_dir)
         .map_err(CertError::Io)?;
 
@@ -46,6 +63,9 @@ pub fn save_identity(data_dir: &Path, signing_key: &SigningKey, cert_der: &[u8])
     std::fs::write(data_dir.join("node.crt"), cert_der)
         .map_err(CertError::Io)?;
 
+    std::fs::write(data_dir.join("identity.tls"), key_der)
+        .map_err(CertError::Io)?;
+
     Ok(())
 }
 
@@ -53,10 +73,12 @@ pub fn save_identity(data_dir: &Path, signing_key: &SigningKey, cert_der: &[u8])
 pub fn load_or_generate_identity(data_dir: &Path) -> Result<(SigningKey, String, Vec<u8>, Vec<u8>), CertError> {
     let key_path = data_dir.join("identity.key");
     let cert_path = data_dir.join("node.crt");
+    let tls_key_path = data_dir.join("identity.tls");
 
-    if key_path.exists() && cert_path.exists() {
+    if key_path.exists() && cert_path.exists() && tls_key_path.exists() {
         let key_bytes = std::fs::read(&key_path).map_err(CertError::Io)?;
         let cert_der = std::fs::read(&cert_path).map_err(CertError::Io)?;
+        let tls_key_der = std::fs::read(&tls_key_path).map_err(CertError::Io)?;
 
         let signing_key = SigningKey::from_bytes(
             key_bytes.as_slice().try_into()
@@ -64,30 +86,23 @@ pub fn load_or_generate_identity(data_dir: &Path) -> Result<(SigningKey, String,
         );
         let node_id = node_id_from_pubkey(&signing_key.verifying_key());
 
-        // Re-derive TLS key from the signing key for the TLS cert
-        // We store the TLS key alongside as identity.tls for convenience
-        let tls_key_path = data_dir.join("identity.tls");
-        let tls_key_der = if tls_key_path.exists() {
-            std::fs::read(&tls_key_path).map_err(CertError::Io)?
-        } else {
-            // Generate a new TLS keypair and re-issue cert
-            let key_pair = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519)
-                .map_err(|e| CertError::Generation(e.to_string()))?;
-            let tls_der = key_pair.serialize_der();
-            std::fs::write(&tls_key_path, &tls_der).map_err(CertError::Io)?;
-            tls_der
-        };
+        // Verify the TLS key matches the signing key by re-deriving the key
+        // and checking the PKCS#8 DER matches. If mismatch, re-issue cert+key.
+        let (_, expected_key_der) = make_cert_and_key(&signing_key, &node_id)?;
+        if tls_key_der != expected_key_der {
+            // identity.tls doesn't match identity.key — re-issue both cert and key
+            let (new_cert_der, new_key_der) = make_cert_and_key(&signing_key, &node_id)?;
+            std::fs::write(&cert_path, &new_cert_der).map_err(CertError::Io)?;
+            std::fs::write(&tls_key_path, &new_key_der).map_err(CertError::Io)?;
+            return Ok((signing_key, node_id, new_cert_der, new_key_der));
+        }
 
         Ok((signing_key, node_id, cert_der, tls_key_der))
     } else {
-        let (signing_key, node_id, cert_der, tls_key_der) = generate_identity()?;
-        save_identity(data_dir, &signing_key, &cert_der)?;
-
-        // Also save the TLS key
-        let tls_key_path = data_dir.join("identity.tls");
-        std::fs::write(&tls_key_path, &tls_key_der).map_err(CertError::Io)?;
-
-        Ok((signing_key, node_id, cert_der, tls_key_der))
+        // One or more files missing — regenerate everything
+        let (signing_key, node_id, cert_der, key_der) = generate_identity()?;
+        save_identity(data_dir, &signing_key, &cert_der, &key_der)?;
+        Ok((signing_key, node_id, cert_der, key_der))
     }
 }
 
