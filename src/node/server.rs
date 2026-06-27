@@ -77,6 +77,9 @@ impl Node {
         endpoint.set_default_client_config(client_config);
 
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+        // Bounded channel for inbound messages — provides backpressure
+        // when the node is overwhelmed with incoming data.
+        let (inbound_tx, _inbound_rx) = mpsc::channel::<Vec<u8>>(256);
         self.shutdown_tx = Some(shutdown_tx);
         self.endpoint = Some(endpoint);
         self.running.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -136,9 +139,10 @@ impl Node {
                                 let running = running.clone();
                                 let dd = data_dir.clone();
                                 let ac = active_connections.clone();
+                                let ib_tx = inbound_tx.clone();
                                 tokio::spawn(async move {
                                     ac.fetch_add(1, Ordering::Relaxed);
-                                    let result = handle_connection(incoming, rt, nid, r, running, dd).await;
+                                    let result = handle_connection(incoming, rt, nid, r, running, dd, ib_tx).await;
                                     ac.fetch_sub(1, Ordering::Relaxed);
                                     if let Err(e) = result {
                                         error!("Connection error: {}", e);
@@ -283,6 +287,7 @@ async fn handle_connection(
     local_role: NodeRole,
     running: Arc<std::sync::atomic::AtomicBool>,
     data_dir: std::path::PathBuf,
+    _inbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = incoming.await?;
     let remote_addr = conn.remote_address();
