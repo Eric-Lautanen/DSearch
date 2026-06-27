@@ -4,6 +4,10 @@ use std::collections::BTreeMap;
 const K_BUCKET_SIZE: usize = 20;
 const MAX_NODE_ID_BITS: usize = 256;
 
+/// Seconds after which a peer with no activity is considered stale.
+/// Peers not seen for this long are pruned from the routing table.
+pub const PEER_STALE_SECS: u64 = 900; // 15 minutes
+
 /// A node entry in the routing table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoutingEntry {
@@ -81,6 +85,26 @@ impl RoutingTable {
         self.buckets.len()
     }
 
+    /// Remove peers whose `last_seen` is older than `cutoff_secs` ago.
+    /// Returns the number of peers pruned.
+    pub fn prune_stale(&mut self, cutoff_secs: u64) -> usize {
+        let now = now_secs();
+        let stale: Vec<String> = self.buckets.iter()
+            .filter(|(_, e)| now.saturating_sub(e.last_seen) > cutoff_secs)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let count = stale.len();
+        for id in &stale {
+            self.buckets.remove(id);
+        }
+        count
+    }
+
+    /// Prune peers that haven't been seen for `PEER_STALE_SECS`.
+    pub fn prune_dead_peers(&mut self) -> usize {
+        self.prune_stale(PEER_STALE_SECS)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.buckets.is_empty()
     }
@@ -95,6 +119,13 @@ fn hex_to_bytes(hex: &str) -> Vec<u8> {
         .step_by(2)
         .filter_map(|i| hex.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
         .collect()
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
@@ -132,5 +163,50 @@ mod tests {
         let closest = rt.find_closest(&"00".repeat(32), 1);
         assert_eq!(closest.len(), 1);
         assert_eq!(closest[0].node_id, "01".repeat(32));
+    }
+
+    #[test]
+    fn prune_stale_removes_old_peers() {
+        let mut rt = RoutingTable::new("aa".repeat(32));
+        let now = now_secs();
+        rt.insert(RoutingEntry {
+            node_id: "bb".repeat(32),
+            addr: "1".to_string(),
+            roles: vec![],
+            last_seen: now,
+        });
+        rt.insert(RoutingEntry {
+            node_id: "cc".repeat(32),
+            addr: "2".to_string(),
+            roles: vec![],
+            last_seen: now - 2000, // stale
+        });
+        assert_eq!(rt.len(), 2);
+        let pruned = rt.prune_stale(1000);
+        assert_eq!(pruned, 1);
+        assert_eq!(rt.len(), 1);
+        assert!(rt.get(&"bb".repeat(32)).is_some());
+        assert!(rt.get(&"cc".repeat(32)).is_none());
+    }
+
+    #[test]
+    fn prune_dead_peers_uses_default_threshold() {
+        let mut rt = RoutingTable::new("aa".repeat(32));
+        let now = now_secs();
+        rt.insert(RoutingEntry {
+            node_id: "bb".repeat(32),
+            addr: "1".to_string(),
+            roles: vec![],
+            last_seen: now,
+        });
+        rt.insert(RoutingEntry {
+            node_id: "cc".repeat(32),
+            addr: "2".to_string(),
+            roles: vec![],
+            last_seen: now - PEER_STALE_SECS - 1,
+        });
+        let pruned = rt.prune_dead_peers();
+        assert_eq!(pruned, 1);
+        assert_eq!(rt.len(), 1);
     }
 }

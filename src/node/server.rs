@@ -7,8 +7,12 @@ use ed25519_dalek::SigningKey;
 use quinn::Endpoint;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
+
+/// Default maximum concurrent QUIC connections.
+const DEFAULT_MAX_CONNECTIONS: usize = 200;
 
 pub struct Node {
     pub node_id: String,
@@ -20,6 +24,10 @@ pub struct Node {
     pub endpoint: Option<Endpoint>,
     pub shutdown_tx: Option<mpsc::Sender<()>>,
     pub running: Arc<std::sync::atomic::AtomicBool>,
+    /// Active connection count, capped at max_connections.
+    pub active_connections: Arc<AtomicUsize>,
+    /// Maximum concurrent QUIC connections.
+    pub max_connections: usize,
 }
 
 impl Node {
@@ -29,6 +37,17 @@ impl Node {
         role: NodeRole,
         data_dir: std::path::PathBuf,
         listen_addr: SocketAddr,
+    ) -> Self {
+        Self::with_max_connections(signing_key, node_id, role, data_dir, listen_addr, DEFAULT_MAX_CONNECTIONS)
+    }
+
+    pub fn with_max_connections(
+        signing_key: SigningKey,
+        node_id: String,
+        role: NodeRole,
+        data_dir: std::path::PathBuf,
+        listen_addr: SocketAddr,
+        max_connections: usize,
     ) -> Self {
         let routing_table = Arc::new(RwLock::new(RoutingTable::new(node_id.clone())));
         Self {
@@ -41,6 +60,8 @@ impl Node {
             endpoint: None,
             shutdown_tx: None,
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            active_connections: Arc::new(AtomicUsize::new(0)),
+            max_connections,
         }
     }
 
@@ -68,6 +89,29 @@ impl Node {
         let running = self.running.clone();
         let endpoint_ref = self.endpoint.as_ref().unwrap().clone();
         let data_dir = self.data_dir.clone();
+        let active_connections = self.active_connections.clone();
+        let max_connections = self.max_connections;
+
+        // Periodic dead-peer pruning task
+        {
+            let rt = self.routing_table.clone();
+            let running = self.running.clone();
+            let dd = self.data_dir.clone();
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                loop {
+                    interval.tick().await;
+                    if !running.load(std::sync::atomic::Ordering::SeqCst) {
+                        break;
+                    }
+                    let pruned = rt.write().await.prune_dead_peers();
+                    if pruned > 0 {
+                        info!("Pruned {} stale peers from routing table", pruned);
+                        write_peers_file(&rt, &dd).await;
+                    }
+                }
+            });
+        }
 
         // Main accept loop
         tokio::spawn(async move {
@@ -76,13 +120,27 @@ impl Node {
                     incoming = endpoint_ref.accept() => {
                         match incoming {
                             Some(incoming) => {
+                                // Enforce connection pool cap
+                                if active_connections.load(Ordering::Relaxed) >= max_connections {
+                                    warn!("Connection pool full ({}/{}), rejecting incoming", active_connections.load(Ordering::Relaxed), max_connections);
+                                    // Accept then immediately close to avoid hanging the remote
+                                    match incoming.await {
+                                        Ok(conn) => { conn.close(0u32.into(), b"connection pool full"); }
+                                        Err(_) => {}
+                                    }
+                                    continue;
+                                }
                                 let rt = routing_table.clone();
                                 let nid = node_id.clone();
                                 let r = role.clone();
                                 let running = running.clone();
                                 let dd = data_dir.clone();
+                                let ac = active_connections.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_connection(incoming, rt, nid, r, running, dd).await {
+                                    ac.fetch_add(1, Ordering::Relaxed);
+                                    let result = handle_connection(incoming, rt, nid, r, running, dd).await;
+                                    ac.fetch_sub(1, Ordering::Relaxed);
+                                    if let Err(e) = result {
                                         error!("Connection error: {}", e);
                                     }
                                 });

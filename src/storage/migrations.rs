@@ -83,6 +83,19 @@ pub fn get_schema_version(db: &Database) -> Result<u64, String> {
     }
 }
 
+/// Open the database at data_dir, check/migrate, and return the schema version.
+/// Used by `dsearch doctor` for diagnostics.
+pub fn check_and_migrate_on_path(data_dir: &std::path::Path) -> Result<u64, String> {
+    let db_path = data_dir.join("store.redb");
+    if !db_path.exists() {
+        return Ok(0);
+    }
+    let db = Database::open(&db_path)
+        .map_err(|e| format!("open store.redb: {}", e))?;
+    check_and_migrate(&db)?;
+    get_schema_version(&db)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

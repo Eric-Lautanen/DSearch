@@ -57,6 +57,8 @@ pub struct NodeConfig {
     pub ipv4: bool,
     #[serde(default = "default_true")]
     pub ipv6: bool,
+    #[serde(default = "default_max_concurrent_queries")]
+    pub max_concurrent_queries: u32,
 }
 
 impl Default for NodeConfig {
@@ -67,6 +69,7 @@ impl Default for NodeConfig {
             min_protocol_version: default_min_protocol_version(),
             ipv4: true,
             ipv6: true,
+            max_concurrent_queries: default_max_concurrent_queries(),
         }
     }
 }
@@ -202,6 +205,7 @@ impl Default for BootstrapConfig {
 // Default value functions
 fn default_role() -> String { "light".to_string() }
 fn default_max_connections() -> u32 { 200 }
+fn default_max_concurrent_queries() -> u32 { 50 }
 fn default_min_protocol_version() -> u8 { 1 }
 fn default_api_port() -> u16 { 7743 }
 fn default_gateway_bind() -> String { "0.0.0.0:7744".to_string() }
@@ -286,6 +290,10 @@ pub fn set_config_value(config: &mut DsearchConfig, key: &str, value: &str) -> R
         }
         "node.max_connections" => {
             config.node.max_connections = value.parse()
+                .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
+        }
+        "node.max_concurrent_queries" => {
+            config.node.max_concurrent_queries = value.parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "node.min_protocol_version" => {

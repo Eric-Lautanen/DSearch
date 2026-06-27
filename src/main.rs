@@ -12,6 +12,7 @@ mod service;
 mod ui;
 mod sanitize;
 mod model;
+mod doctor;
 
 use clap::Parser;
 use cli::cmd::*;
@@ -66,19 +67,13 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
             cmd_search(&query, schema, limit, &output, &data_dir)
         }
         Commands::Record { action } => cmd_record(action, &data_dir),
-        Commands::Service { .. } => {
-            eprintln!("Service management not yet implemented (Phase 9)");
-            std::process::exit(1);
-        }
+        Commands::Service { action } => cmd_service(action, &data_dir),
         Commands::Tray { action } => cmd_tray(action, &data_dir),
         Commands::Config { action } => cmd_config(action, &data_dir),
         Commands::Identity { action } => cmd_identity(action, &data_dir),
         Commands::Scraper { action } => cmd_scraper(action, &data_dir).await,
         Commands::Gateway { action } => cmd_gateway(action, &data_dir),
-        Commands::Doctor { .. } => {
-            eprintln!("Doctor not yet implemented (Phase 9)");
-            std::process::exit(1);
-        }
+        Commands::Doctor { output } => cmd_doctor(&data_dir, &output),
         Commands::Log { .. } => {
             eprintln!("Log streaming not yet implemented");
             std::process::exit(1);
@@ -1131,4 +1126,51 @@ fn cmd_tray(action: TrayAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::e
             Ok(())
         }
     }
+}
+
+fn cmd_service(action: ServiceAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match action {
+        ServiceAction::Install { headless } => {
+            let msg = service::service_install(data_dir, headless)?;
+            println!("{}", msg);
+            Ok(())
+        }
+        ServiceAction::Enable => {
+            let msg = service::service_enable(data_dir)?;
+            println!("{}", msg);
+            Ok(())
+        }
+        ServiceAction::Disable => {
+            let msg = service::service_disable(data_dir)?;
+            println!("{}", msg);
+            Ok(())
+        }
+        ServiceAction::Status => {
+            let msg = service::service_status(data_dir)?;
+            println!("{}", msg);
+            Ok(())
+        }
+        ServiceAction::Uninstall => {
+            let msg = service::service_uninstall(data_dir)?;
+            println!("{}", msg);
+            Ok(())
+        }
+    }
+}
+
+fn cmd_doctor(data_dir: &PathBuf, output: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let checks = doctor::run_doctor(data_dir);
+    if output == "json" {
+        println!("{}", doctor::format_json(&checks));
+    } else {
+        println!("dsearch doctor\n");
+        print!("{}", doctor::format_text(&checks));
+    }
+
+    // Exit with non-zero if any check failed
+    let has_fail = checks.iter().any(|c| c.status == doctor::CheckStatus::Fail);
+    if has_fail {
+        std::process::exit(1);
+    }
+    Ok(())
 }
