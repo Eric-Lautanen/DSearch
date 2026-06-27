@@ -142,6 +142,37 @@ impl Store {
         index::search_index(&self.db, schema, tag_key, tag_value)
     }
 
+    /// Search local Tier 3 records using the query language.
+    /// Returns records matching the query, ranked by score.
+    pub fn search_records(
+        &self,
+        query_str: &str,
+        limit: usize,
+    ) -> Result<Vec<ContentRecord>, String> {
+        let parsed = crate::search::query::parse_query(query_str);
+        let effective_limit = parsed.limit.unwrap_or(limit);
+
+        // If schema filter is specified, use it to narrow the scan
+        let schema_filter = parsed.fields.get("schema").map(|s| s.as_str());
+
+        // Scan all records (or filtered by schema) and match against query
+        let all_records = records::list_records(&self.db, schema_filter, effective_limit * 10)?;
+
+        let mut matched: Vec<(ContentRecord, f64)> = Vec::new();
+        for record in all_records {
+            if crate::search::query::matches_query(&record, &parsed) {
+                let score = crate::search::query::score_record(&record, &parsed, 1);
+                matched.push((record, score));
+            }
+        }
+
+        // Sort by score descending
+        matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Apply limit
+        Ok(matched.into_iter().take(effective_limit).map(|(r, _)| r).collect())
+    }
+
     /// Get record count.
     pub fn record_count(&self) -> Result<u64, String> {
         records::record_count(&self.db)
@@ -266,5 +297,32 @@ mod tests {
         let (removed, _) = store.sweep_once().unwrap();
         assert_eq!(removed, 1);
         assert!(store.get_record("r1").unwrap().is_none());
+    }
+
+    #[test]
+    fn store_search_records() {
+        let (_dir, store) = open_test_store();
+        let r1 = make_record("r1", "sh1", 1000, 2000);
+        let mut r2 = make_record("r2", "sh2", 1000, 2000);
+        r2.schema = crate::model::schema::RUST_CRATE.to_string();
+        r2.body = "Tokio async runtime benchmarks".to_string();
+
+        store.insert_record(&r1).unwrap();
+        store.insert_record(&r2).unwrap();
+
+        // Simple text search
+        let results = store.search_records("hello", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "r1");
+
+        // Schema filter via query language
+        let results = store.search_records("schema:rust/crate", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "r2");
+
+        // Search across body
+        let results = store.search_records("async", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, "r2");
     }
 }

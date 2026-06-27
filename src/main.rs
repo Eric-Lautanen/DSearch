@@ -58,9 +58,8 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
         Commands::Bootstrap { action } => cmd_bootstrap(action, &data_dir),
         Commands::Peers { action } => cmd_peers(action, &data_dir).await,
         Commands::Role { action } => cmd_role(action),
-        Commands::Search { .. } => {
-            eprintln!("Search not yet implemented (Phase 4)");
-            std::process::exit(1);
+        Commands::Search { query, schema, limit, output } => {
+            cmd_search(&query, schema, limit, &output, &data_dir)
         }
         Commands::Record { action } => cmd_record(action, &data_dir),
         Commands::Service { .. } => {
@@ -549,6 +548,40 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
             }
         }
     }
+}
+
+fn cmd_search(query: &str, schema: Option<String>, limit: u32, output: &str, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let db = storage::open_store(data_dir)?;
+    let config = config::load_config(data_dir)
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+    let store = Store::new(db, config.storage);
+
+    // Prepend schema filter to query if provided via --schema flag
+    let effective_query = match schema {
+        Some(s) => format!("schema:{} {}", s, query),
+        None => query.to_string(),
+    };
+
+    let results = store.search_records(&effective_query, limit as usize)?;
+
+    if output == "json" {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        if results.is_empty() {
+            println!("No results found.");
+        } else {
+            println!("Search results ({}):", results.len());
+            for r in &results {
+                let tags = r.tags.join(",");
+                println!("  {}  schema={}  tags=[{}]  created={}  source={}",
+                    r.id, r.schema, tags, r.created_at, r.source_url);
+                // Show a snippet of the body
+                let snippet: String = r.body.chars().take(120).collect();
+                println!("    {}", snippet);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn default_bootstrap_toml() -> String {

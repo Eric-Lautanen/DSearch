@@ -61,12 +61,13 @@ impl std::fmt::Display for ScrapeSource {
     }
 }
 
-/// When a scrape job re-runs
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum RefreshPolicy {
+    #[serde(rename = "once")]
     Once,
+    #[serde(rename = "interval")]
     Interval,
+    #[serde(rename = "on-change", alias = "onchange")]
     OnChange,
 }
 
