@@ -99,6 +99,12 @@ pub enum Commands {
         action: ScraperAction,
     },
 
+    /// Gateway API key management
+    Gateway {
+        #[command(subcommand)]
+        action: GatewayAction,
+    },
+
     /// Diagnostics
     Doctor {
         /// Output format
@@ -215,6 +221,8 @@ pub enum RecordAction {
         schema: Option<String>,
         #[arg(long, default_value = "50")]
         limit: usize,
+        #[arg(long, default_value = "text")]
+        output: String,
     },
     /// Pin a record
     Pin { id: String },
@@ -326,5 +334,22 @@ pub enum ScraperAction {
     Run {
         /// Job name
         name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GatewayAction {
+    /// Create a new API key
+    KeyCreate {
+        /// Nickname for the key
+        #[arg(long)]
+        nickname: Option<String>,
+    },
+    /// List API keys
+    KeyList,
+    /// Revoke an API key
+    KeyRevoke {
+        /// Nickname of the key to revoke
+        nickname: String,
     },
 }

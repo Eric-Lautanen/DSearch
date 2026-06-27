@@ -15,6 +15,7 @@ mod model;
 
 use clap::Parser;
 use cli::cmd::*;
+use cli::api_client;
 use node::roles::NodeRole;
 use node::server::Node;
 use proto::cert;
@@ -29,8 +30,6 @@ fn default_data_dir() -> PathBuf {
 
 #[tokio::main]
 async fn main() {
-    // Install the rustls crypto provider (ring) — required by both quinn (QUIC)
-    // and the hand-rolled HTTPS scraper. Must happen before any TLS operation.
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("failed to install rustls crypto provider");
@@ -43,7 +42,6 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-
     let data_dir = cli.data_dir.clone()
         .unwrap_or_else(default_data_dir);
 
@@ -79,6 +77,7 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
         Commands::Config { action } => cmd_config(action, &data_dir),
         Commands::Identity { action } => cmd_identity(action, &data_dir),
         Commands::Scraper { action } => cmd_scraper(action, &data_dir).await,
+        Commands::Gateway { action } => cmd_gateway(action, &data_dir),
         Commands::Doctor { .. } => {
             eprintln!("Doctor not yet implemented (Phase 9)");
             std::process::exit(1);
@@ -125,7 +124,6 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
         NodeAction::Start { headless: _, role, port } => {
             std::fs::create_dir_all(data_dir)?;
 
-            // Validate config version before starting
             if let Err(e) = config::load_config(data_dir) {
                 eprintln!("Config error: {}", e);
                 std::process::exit(1);
@@ -139,10 +137,39 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
             let quic_port = port.unwrap_or(7744);
             let listen_addr: SocketAddr = format!("0.0.0.0:{}", quic_port).parse()?;
 
+            // Open store for API server
+            let db = storage::open_store(data_dir)?;
+            let cfg = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            let store = std::sync::Arc::new(Store::new(db, cfg.storage.clone()));
+
             let mut node = Node::new(signing_key, node_id.clone(), node_role, data_dir.clone(), listen_addr);
 
             node.start().await?;
             info!("Node {} started", &node_id[..8]);
+
+            // Start the local HTTP API server with port auto-increment
+            let api_port = crate::api::local::start_api_server(
+                data_dir.clone(),
+                cfg.api.port,
+                node_id.clone(),
+                cfg.clone(),
+                store.clone(),
+            ).await?;
+            info!("Local API started on port {}", api_port);
+
+            // Start the background expiry sweeper
+            let _sweeper = store.start_expiry_sweeper(std::time::Duration::from_secs(300));
+
+            // Start the gateway API if enabled
+            if cfg.gateway.enabled {
+                crate::api::gateway::start_gateway_server(
+                    data_dir.clone(),
+                    cfg.clone(),
+                    store.clone(),
+                    node_id.clone(),
+                ).await?;
+            }
 
             // Connect to bootstrap peers
             let peers = bootstrap::resolver::resolve_bootstrap_peers(data_dir);
@@ -165,10 +192,6 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
             // Write PID file for `node stop` to find
             let pid_path = data_dir.join("node.pid");
             std::fs::write(&pid_path, std::process::id().to_string())?;
-
-            // Write api.port file (placeholder for Phase 7)
-            let port_path = data_dir.join("api.port");
-            std::fs::write(&port_path, "7743")?;
 
             // Watch for shutdown signal file (for `node stop` on Windows)
             let shutdown_path = data_dir.join("node.shutdown");
@@ -254,17 +277,55 @@ async fn cmd_node(action: NodeAction, data_dir: &PathBuf) -> Result<(), Box<dyn 
             Ok(())
         }
         NodeAction::Status => {
-            println!("Node status: not yet queryable (Phase 7)");
+            // Try to reach the API
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                match api_client::api_get(port, "/node") {
+                    Ok(body) => println!("{}", body),
+                    Err(e) => println!("Node API error: {}", e),
+                }
+            } else {
+                println!("Node is not running (API not reachable).");
+            }
             Ok(())
         }
         NodeAction::Restart => {
-            println!("Node restart: not yet implemented (Phase 7)");
+            // Stop then start — for now, just report
+            println!("Node restart: stop the node first with `dsearch node stop`, then `dsearch node start`");
             Ok(())
         }
     }
 }
 
 fn cmd_bootstrap(action: BootstrapAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Try API first for list
+    if let Some(port) = api_client::api_is_reachable(data_dir) {
+        match action {
+            BootstrapAction::List => {
+                match api_client::api_get(port, "/bootstrap") {
+                    Ok(body) => {
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                        if let Some(peers) = v.get("peers").and_then(|p| p.as_array()) {
+                            if peers.is_empty() {
+                                println!("No bootstrap peers configured.");
+                            } else {
+                                println!("Bootstrap peers ({}):", peers.len());
+                                for (i, p) in peers.iter().enumerate() {
+                                    let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let addr = p.get("addr").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
+                                    println!("  {}. id={} addr={} note=\"{}\"", i + 1, id, addr, note);
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("API error: {}", e),
+                }
+                return Ok(());
+            }
+            _ => {} // Other actions fall through to direct file ops
+        }
+    }
+
     match action {
         BootstrapAction::List => {
             let peers = bootstrap::resolver::resolve_bootstrap_peers(data_dir);
@@ -308,11 +369,29 @@ fn cmd_bootstrap(action: BootstrapAction, data_dir: &PathBuf) -> Result<(), Box<
 
 async fn cmd_peers(action: PeersAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
-        PeersAction::List { .. } => {
-            let peers_path = data_dir.join("peers.json");
-            if peers_path.exists() {
-                let contents = std::fs::read_to_string(&peers_path)?;
-                println!("{}", contents);
+        PeersAction::List { output } => {
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                match api_client::api_get(port, "/peers") {
+                    Ok(body) => {
+                        if output == "json" {
+                            println!("{}", body);
+                        } else {
+                            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                            if let Some(peers) = v.get("peers").and_then(|p| p.as_array()) {
+                                if peers.is_empty() {
+                                    println!("No peers known.");
+                                } else {
+                                    println!("Peers ({}):", peers.len());
+                                    for p in peers {
+                                        let addr = p.get("addr").and_then(|v| v.as_str()).unwrap_or("?");
+                                        println!("  {}", addr);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("API error: {}", e),
+                }
             } else {
                 println!("No peers known. Is the node running?");
             }
@@ -370,18 +449,40 @@ fn cmd_role(action: RoleAction) -> Result<(), Box<dyn std::error::Error + Send +
 fn cmd_config(action: ConfigAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
         ConfigAction::Show => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                match api_client::api_get(port, "/config") {
+                    Ok(body) => {
+                        // Pretty-print the JSON
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+                        println!("{}", serde_json::to_string_pretty(&v)?);
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through to direct file read
+                }
+            }
             let config_path = data_dir.join("config.toml");
             if config_path.exists() {
                 let contents = std::fs::read_to_string(&config_path)?;
                 println!("{}", contents);
             } else {
-                // Show defaults if no config file exists
                 let defaults = config::default_config_toml();
                 println!("{}", defaults);
             }
             Ok(())
         }
         ConfigAction::Set { key, value } => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                let body = serde_json::json!({"key": key, "value": value}).to_string();
+                match api_client::api_post(port, "/config/set", &body) {
+                    Ok(_) => {
+                        println!("Set {} = {}", key, value);
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through to direct file write
+                }
+            }
             std::fs::create_dir_all(data_dir)?;
             let mut cfg = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
@@ -406,6 +507,19 @@ fn cmd_config(action: ConfigAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
 fn cmd_identity(action: IdentityAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
         IdentityAction::Show => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                match api_client::api_get(port, "/identity") {
+                    Ok(body) => {
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                        if let Some(node_id) = v.get("node_id").and_then(|v| v.as_str()) {
+                            println!("Node ID: {}", node_id);
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through
+                }
+            }
             let key_path = data_dir.join("identity.key");
             if key_path.exists() {
                 let key_bytes = std::fs::read(&key_path)?;
@@ -453,6 +567,119 @@ fn cmd_identity(action: IdentityAction, data_dir: &PathBuf) -> Result<(), Box<dy
 }
 
 fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Try API first for all record operations (node may have DB locked)
+    if let Some(port) = api_client::api_is_reachable(data_dir) {
+        match &action {
+            RecordAction::Get { id, output } => {
+                let path = format!("/record/{}", id);
+                match api_client::api_get(port, &path) {
+                    Ok(body) => {
+                        if output == "json" {
+                            println!("{}", body);
+                        } else {
+                            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                            print_record_text(&v);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) if e.contains("not found") => {
+                        eprintln!("Record not found: {}", id);
+                        std::process::exit(1);
+                    }
+                    Err(_) => {} // Fall through to direct access
+                }
+            }
+            RecordAction::List { schema, limit, output } => {
+                let mut path = format!("/records?limit={}", limit);
+                if let Some(ref s) = schema {
+                    path.push_str(&format!("&schema={}", s));
+                }
+                match api_client::api_get(port, &path) {
+                    Ok(body) => {
+                        if output == "json" {
+                            println!("{}", body);
+                        } else {
+                            let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                            if let Some(records) = v.get("records").and_then(|r| r.as_array()) {
+                                if records.is_empty() {
+                                    println!("No records found.");
+                                } else {
+                                    println!("Records ({}):", records.len());
+                                    for r in records {
+                                        let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let schema = r.get("schema").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let created = r.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                                        println!("  {}  schema={}  created={}", id, schema, created);
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through
+                }
+            }
+            RecordAction::Insert { file } => {
+                let json_str = std::fs::read_to_string(file)
+                    .map_err(|e| format!("read {}: {}", file.display(), e))?;
+                match api_client::api_post(port, "/record/insert", &json_str) {
+                    Ok(body) => {
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                        let action = v.get("action").and_then(|v| v.as_str()).unwrap_or("inserted");
+                        let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                        println!("Record {} {}.", id, action);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+            RecordAction::Pin { id } => {
+                let body = serde_json::json!({"id": id}).to_string();
+                match api_client::api_post(port, "/record/pin", &body) {
+                    Ok(_) => { println!("Record {} pinned.", id); return Ok(()); }
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            }
+            RecordAction::Unpin { id } => {
+                let body = serde_json::json!({"id": id}).to_string();
+                match api_client::api_post(port, "/record/unpin", &body) {
+                    Ok(_) => { println!("Record {} unpinned.", id); return Ok(()); }
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            }
+            RecordAction::Delete { id } => {
+                let body = serde_json::json!({"id": id}).to_string();
+                match api_client::api_post(port, "/record/delete", &body) {
+                    Ok(_) => { println!("Record {} deleted.", id); return Ok(()); }
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            }
+            RecordAction::Announce { id } => {
+                let body = serde_json::json!({"id": id}).to_string();
+                match api_client::api_post(port, "/record/announce", &body) {
+                    Ok(_) => { println!("Record {} announced.", id); return Ok(()); }
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            }
+            RecordAction::Sweep => {
+                match api_client::api_post(port, "/record/sweep", "{}") {
+                    Ok(body) => {
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                        let rec = v.get("records_removed").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let ann = v.get("announcements_removed").and_then(|v| v.as_u64()).unwrap_or(0);
+                        println!("Expiry sweep complete: removed {} records, {} announcements.", rec, ann);
+                        return Ok(());
+                    }
+                    Err(e) => { eprintln!("Error: {}", e); std::process::exit(1); }
+                }
+            }
+        }
+    }
+
+    // Direct store access fallback (only when API is not reachable)
     let db = storage::open_store(data_dir)?;
     let config = config::load_config(data_dir)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
@@ -484,16 +711,20 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
             }
             Ok(())
         }
-        RecordAction::List { schema, limit } => {
+        RecordAction::List { schema, limit, output } => {
             let records = store.list_records(schema.as_deref(), limit)?;
             if records.is_empty() {
                 println!("No records found.");
             } else {
-                println!("Records ({}):", records.len());
-                for r in &records {
-                    let pinned = if store.is_pinned(&r.id)? { " [pinned]" } else { "" };
-                    println!("  {}  schema={}  tags=[{}]  created={}  expires={}{}", 
-                        r.id, r.schema, r.tags.join(","), r.created_at, r.expires_at, pinned);
+                if output == "json" {
+                    println!("{}", serde_json::to_string_pretty(&records)?);
+                } else {
+                    println!("Records ({}):", records.len());
+                    for r in &records {
+                        let pinned = if store.is_pinned(&r.id)? { " [pinned]" } else { "" };
+                        println!("  {}  schema={}  tags=[{}]  created={}  expires={}{}", 
+                            r.id, r.schema, r.tags.join(","), r.created_at, r.expires_at, pinned);
+                    }
                 }
             }
             Ok(())
@@ -547,7 +778,6 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
         RecordAction::Announce { id } => {
             match store.get_record(&id)? {
                 Some(record) => {
-                    // Create an announcement for this record
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
@@ -573,14 +803,63 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
         }
     }
 }
+fn print_record_text(v: &serde_json::Value) {
+    println!("ID:          {}", v.get("id").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!("Source URL:  {}", v.get("source_url").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!("Source Hash: {}", v.get("source_hash").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!("Schema:      {}", v.get("schema").and_then(|v| v.as_str()).unwrap_or("?"));
+    println!("Tags:        {}", v.get("tags").and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        .unwrap_or_default());
+    println!("Created At:  {}", v.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0));
+    println!("Expires At:  {}", v.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0));
+    println!("Body:");
+    println!("{}", v.get("body").and_then(|v| v.as_str()).unwrap_or(""));
+}
 
 fn cmd_search(query: &str, schema: Option<String>, limit: u32, output: &str, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // Try API first
+    if let Some(port) = api_client::api_is_reachable(data_dir) {
+        let mut path = format!("/search?q={}", url_encode(query));
+        if let Some(ref s) = schema {
+            path.push_str(&format!("&schema={}", url_encode(s)));
+        }
+        path.push_str(&format!("&limit={}", limit));
+        match api_client::api_get(port, &path) {
+            Ok(body) => {
+                if output == "json" {
+                    println!("{}", body);
+                } else {
+                    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                    if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+                        if results.is_empty() {
+                            println!("No results found.");
+                        } else {
+                            println!("Search results ({}):", results.len());
+                            for r in results {
+                                let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                let schema = r.get("schema").and_then(|v| v.as_str()).unwrap_or("?");
+                                let source = r.get("source_url").and_then(|v| v.as_str()).unwrap_or("?");
+                                let body = r.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                                let snippet: String = body.chars().take(120).collect();
+                                println!("  {}  schema={}  source={}", id, schema, source);
+                                println!("    {}", snippet);
+                            }
+                        }
+                    }
+                }
+                return Ok(());
+            }
+            Err(_) => {} // Fall through
+        }
+    }
+
+    // Direct store access fallback
     let db = storage::open_store(data_dir)?;
     let config = config::load_config(data_dir)
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
     let store = Store::new(db, config.storage);
 
-    // Prepend schema filter to query if provided via --schema flag
     let effective_query = match schema {
         Some(s) => format!("schema:{} {}", s, query),
         None => query.to_string(),
@@ -599,13 +878,20 @@ fn cmd_search(query: &str, schema: Option<String>, limit: u32, output: &str, dat
                 let tags = r.tags.join(",");
                 println!("  {}  schema={}  tags=[{}]  created={}  source={}",
                     r.id, r.schema, tags, r.created_at, r.source_url);
-                // Show a snippet of the body
                 let snippet: String = r.body.chars().take(120).collect();
                 println!("    {}", snippet);
             }
         }
     }
     Ok(())
+}
+
+/// Minimal URL encoding for query parameters.
+fn url_encode(s: &str) -> String {
+    s.replace(' ', "+")
+     .replace('#', "%23")
+     .replace('&', "%26")
+     .replace('=', "%3D")
 }
 
 async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -630,7 +916,6 @@ async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Res
                 max_results: None,
             };
 
-            // Add job to config
             let mut cfg = config;
             cfg.scraper.jobs.push(job);
             config::save_config(data_dir, &cfg)
@@ -640,6 +925,32 @@ async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Res
             Ok(())
         }
         cli::cmd::ScraperAction::List => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                match api_client::api_get(port, "/scraper") {
+                    Ok(body) => {
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+                        if let Some(jobs) = v.get("jobs").and_then(|j| j.as_array()) {
+                            if jobs.is_empty() {
+                                println!("No scraper jobs configured.");
+                            } else {
+                                println!("Scraper jobs ({}):", jobs.len());
+                                for j in jobs {
+                                    let name = j.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let source = j.get("source").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let target = j.get("target").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let refresh = j.get("refresh").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let lifecycle = j.get("lifecycle").and_then(|v| v.as_str()).unwrap_or("?");
+                                    println!("  {}  source={}  target={}  refresh={}  lifecycle={}",
+                                        name, source, target, refresh, lifecycle);
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through
+                }
+            }
             let config = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
             if config.scraper.jobs.is_empty() {
@@ -654,6 +965,23 @@ async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Res
             Ok(())
         }
         cli::cmd::ScraperAction::Run { name } => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                let body = serde_json::json!({"name": name}).to_string();
+                match api_client::api_post(port, "/scraper/run", &body) {
+                    Ok(resp) => {
+                        let v: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+                        if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            let record_id = v.get("record_id").and_then(|v| v.as_str()).unwrap_or("?");
+                            println!("Job '{}' completed: record {}", name, record_id);
+                        } else {
+                            eprintln!("Job '{}' failed", name);
+                        }
+                        return Ok(());
+                    }
+                    Err(_) => {} // Fall through
+                }
+            }
             let db = storage::open_store(data_dir)?;
             let config = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
@@ -673,6 +1001,64 @@ async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Res
                 println!("Job '{}' completed: record {} replaced (dedup).", result.job_name, result.record_id);
             } else {
                 println!("Job '{}' completed: record {} skipped (older).", result.job_name, result.record_id);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn cmd_gateway(action: GatewayAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match action {
+        GatewayAction::KeyCreate { nickname } => {
+            let nickname = nickname.unwrap_or_else(|| crate::api::gateway_keys::generate_nickname());
+            let key_store = crate::api::gateway_keys::GatewayKeyStore::new(data_dir.clone());
+            match key_store.create_key(&nickname) {
+                Ok((secret, info)) => {
+                    println!("API key created:");
+                    println!("  Nickname:    {}", info.nickname);
+                    println!("  Secret:      {}  (save this — it won't be shown again)", secret);
+                    println!("  Created at:  {}", info.created_at);
+                }
+                Err(e) => {
+                    eprintln!("Error creating key: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
+        GatewayAction::KeyList => {
+            let key_store = crate::api::gateway_keys::GatewayKeyStore::new(data_dir.clone());
+            match key_store.list_keys() {
+                Ok(keys) => {
+                    if keys.is_empty() {
+                        println!("No gateway API keys.");
+                    } else {
+                        println!("Gateway API keys ({}):", keys.len());
+                        for k in &keys {
+                            println!("  {}  created={}  last_used={}  requests={}",
+                                k.nickname, k.created_at, k.last_used, k.request_count);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error listing keys: {}", e);
+                    std::process::exit(1);
+                }
+            }
+            Ok(())
+        }
+        GatewayAction::KeyRevoke { nickname } => {
+            let key_store = crate::api::gateway_keys::GatewayKeyStore::new(data_dir.clone());
+            match key_store.revoke_key(&nickname) {
+                Ok(true) => println!("Key '{}' revoked.", nickname),
+                Ok(false) => {
+                    eprintln!("Key '{}' not found.", nickname);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error revoking key: {}", e);
+                    std::process::exit(1);
+                }
             }
             Ok(())
         }

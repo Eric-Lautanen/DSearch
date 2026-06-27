@@ -14,7 +14,7 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 | 4 | Search | ✅ Complete |
 | 5 | Scraper + announcement + dedup | ✅ Complete |
 | 6 | Sanitization | ✅ Complete |
-| 7 | Agent API + CLI | ⬜ Pending |
+| 7 | Agent API + CLI | ✅ Complete |
 | 8 | First-run + UI | ⬜ Pending |
 | 9 | Hardening + service | ⬜ Pending |
 
@@ -80,6 +80,22 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 - Caps: 1 MB record, 256 B key, 64 KB value
 - `sanitize_record()` applied on `record insert` and scraper output
 - 15 sanitization unit tests
+
+## Phase 7 — Agent API + CLI
+
+- Hand-written async HTTP/1.1 server (`tokio::net::TcpListener`) — local API on `127.0.0.1:7743`
+- Port conflict handling: auto-increment 7743→7753, actual port written to `{data_dir}/api.port`
+- All CLI subcommands proxy through local HTTP API when node is running (DB lock-safe)
+- `--output json` on all list/get commands (CLI and API parity)
+- Local API routes: `/health`, `/node`, `/search`, `/record/{id}`, `/records`, `/schema`, `/schema/{id}`, `/peers`, `/peers/add`, `/scraper`, `/scraper/run`, `/storage`, `/storage/vacuum`, `/config`, `/config/set`, `/identity`, `/bootstrap`, `/openapi.json`
+- Write routes: `/record/insert`, `/record/pin`, `/record/unpin`, `/record/delete`, `/record/announce`, `/record/sweep`
+- Gateway API: optional public read-only surface (`0.0.0.0:7744`), GET-only, per-key rate limiting
+- Gateway API keys: 256-bit random secrets, Blake3-hashed storage, auto-generated nicknames (`swift-falcon-7x2`), `dsearch gateway key-create/key-list/key-revoke`
+- OpenAPI 3.1 spec served at `/openapi.json`
+- Response headers: `X-Node-Id`, `X-Protocol-Version`, `X-Record-Count`
+- Error responses: `{ "error": "...", "code": N }` with proper HTTP status codes
+- `dsearch node status` now queries the live API
+- 110 unit tests passing + Phase 7 exit test (two-node, port auto-increment, all routes, CLI/API JSON parity)
 
 ## Quick Start
 
