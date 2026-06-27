@@ -38,6 +38,35 @@ every phase below, not just the phases that mention them explicitly.
   `Announcement` struct), fix the earlier phase directly and re-run
   that phase's exit test — don't patch around it forward.
 
+### All prior phase tests must pass before a phase is done
+- Before marking any phase complete, both of the following must be
+  green for **every prior phase**, not just the current one. A phase
+  is not done until all of them pass simultaneously:
+  1. **`cargo test`** — zero `#[test]` failures across the entire
+     crate. Run as `cargo test 2>&1` and check the summary line.
+  2. **The phase's `.ps1` exit test script** — each phase has a
+     PowerShell script that builds the binary and exercises real CLI
+     and network behaviour against running node processes. These catch
+     failures that unit tests cannot: wire-format regressions, broken
+     cert verifiers, port conflicts, file-generation gaps. Run every
+     prior phase's script in order and confirm each exits with code 0.
+- This is the concrete enforcement of "build order is a gate" — it
+  catches the exact failure mode where new code silently breaks an
+  earlier phase's guarantees (dep conflicts, changed function
+  signatures, new fields that shift canonical encoding, feature flag
+  collisions). The exit test for Phase N passing does not prove Phase
+  N-1 still passes; only running Phase N-1's tests proves that.
+- If any `#[test]` or `.ps1` script fails for a prior phase, fix it
+  under that phase's own commit (per **Commit and push after every
+  phase**) before advancing. Do not batch the fix into the current
+  phase's commit — the breakage belongs to the phase it broke.
+- Do not add `#[ignore]` to a failing unit test, and do not weaken a
+  `.ps1` assertion (converting a `[FAIL]`+`exit 1` to a `[WARN]`
+  that lets the script reach a green summary) to get the suite green.
+  Both are the same as deleting evidence that something is broken.
+  Either fix the underlying problem or document explicitly why the
+  test itself was wrong and update it accordingly.
+
 ### Test the CLI as you build it, not after
 For an autonomous agent, "write tests" is too vague to act on. The
 concrete version: **every time a phase adds or changes a CLI-surfaced

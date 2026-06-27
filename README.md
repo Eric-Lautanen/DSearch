@@ -10,10 +10,10 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 |-------|-------------|--------|
 | 1 | Core networking + identity | ✅ Complete |
 | 2 | Data model + config | ✅ Complete |
-| 3 | Local storage | 🔜 Next |
-| 4 | Search | ⬜ Pending |
-| 5 | Scraper + announcement + dedup | ⬜ Pending |
-| 6 | Sanitization | ⬜ Pending |
+| 3 | Local storage | ✅ Complete |
+| 4 | Search | ✅ Complete |
+| 5 | Scraper + announcement + dedup | ✅ Complete |
+| 6 | Sanitization | ✅ Complete |
 | 7 | Agent API + CLI | ⬜ Pending |
 | 8 | First-run + UI | ⬜ Pending |
 | 9 | Hardening + service | ⬜ Pending |
@@ -42,7 +42,44 @@ Distributed search engine foundation. Multi-agent discovery, registration, and p
 - Config migration framework (`config_version` in `[meta]` table)
 - Future `config_version` rejected on node start (prevents silent corruption)
 - `dsearch config show/set/reset` CLI commands working
-- 31 unit tests passing, all Phase 2 exit tests passing
+
+## Phase 3 — Local storage
+
+- `redb 2.6.0` — `{data_dir}/store.redb`
+- Tables: `records`, `source_index`, `announcements`, `routing`, `pins`, `peers`, `banned_peers`, `meta`
+- Inverted index on `(schema, tag_key, tag_value)`
+- `source_index`: `source_hash → record_id` for dedup
+- Tier 2 TTL enforcement via async expiry sweeper
+- Storage quota + eviction policy (`evict_oldest`, `pause_scraper`, `warn_only`)
+- Schema version check + migration runner on open
+- `dsearch record insert/get/list/pin/unpin/delete/announce/sweep` CLI commands
+
+## Phase 4 — Search
+
+- Local Tier 3 search (sub-ms)
+- Query language parser (`src/search/query.rs`): AND terms, `"exact phrases"`, `OR`, `-exclude`, field filters (`schema:`, `tag:`, `source:`, `scraped:`, `refresh:`), `limit:`, `since:`/`before:`
+- Ranking: field match weight (title > tag > body) + exact phrase bonus + freshness + holder count
+- `dsearch search "query" --schema --limit --output json` CLI command
+- 23 query parser + search engine unit tests
+
+## Phase 5 — Scraper + announcement + dedup
+
+- Source hash dedup before write (same `source_hash` → keep newer `created_at`)
+- Announcement creation via `dsearch record announce`
+- `dsearch scraper add/list/run` CLI commands
+- Hand-rolled HTTP/1.1 client over `tokio::net::TcpStream` for `url` sources
+- Hand-rolled HTTPS via existing `rustls` crate (quinn's TLS backend) + `std::net::TcpStream` in `spawn_blocking` — no extra deps
+- Hand-rolled PEM cert parsing + base64 decoder — plain format logic per roadmap dep philosophy
+- `reqwest` reserved for keyword-discovery path only (cookie jars, UA rotation, redirect handling)
+
+## Phase 6 — Sanitization
+
+- Single `sanitize()` pipeline — all ingest paths
+- Valid UTF-8, no control chars 0x00–0x1F except 0x0A (newline)
+- No Unicode Cf (format) or Cc (control) categories
+- Caps: 1 MB record, 256 B key, 64 KB value
+- `sanitize_record()` applied on `record insert` and scraper output
+- 15 sanitization unit tests
 
 ## Quick Start
 
@@ -61,4 +98,20 @@ dsearch identity show
 
 # List bootstrap peers
 dsearch bootstrap list
+
+# Insert a record from JSON
+dsearch record insert record.json
+
+# List records
+dsearch record list
+
+# Search
+dsearch search "rust async" --schema wiki/article --limit 20
+
+# Add and run a scraper job
+dsearch scraper add --name my-job --source url --target https://example.com/page
+dsearch scraper run my-job
+
+# Announce a record
+dsearch record announce <id>
 ```

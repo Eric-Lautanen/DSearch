@@ -93,6 +93,12 @@ pub enum Commands {
         action: IdentityAction,
     },
 
+    /// Scraper job management
+    Scraper {
+        #[command(subcommand)]
+        action: ScraperAction,
+    },
+
     /// Diagnostics
     Doctor {
         /// Output format
@@ -285,5 +291,40 @@ pub enum LogAction {
     Tail {
         #[arg(long, default_value = "info")]
         level: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScraperAction {
+    /// Add a scraper job
+    Add {
+        /// Job name
+        #[arg(long)]
+        name: String,
+        /// Source type
+        #[arg(long, default_value = "url")]
+        source: String,
+        /// Target URL or query
+        #[arg(long)]
+        target: String,
+        /// Refresh policy
+        #[arg(long, default_value = "once")]
+        refresh: String,
+        /// Interval in seconds
+        #[arg(long, default_value = "3600")]
+        interval_secs: u64,
+        /// Lifecycle
+        #[arg(long, default_value = "ephemeral")]
+        lifecycle: String,
+        /// TTL in seconds
+        #[arg(long, default_value = "3600")]
+        ttl_secs: u64,
+    },
+    /// List scraper jobs
+    List,
+    /// Run a scraper job immediately
+    Run {
+        /// Job name
+        name: String,
     },
 }

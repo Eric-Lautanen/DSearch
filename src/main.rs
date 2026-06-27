@@ -29,6 +29,12 @@ fn default_data_dir() -> PathBuf {
 
 #[tokio::main]
 async fn main() {
+    // Install the rustls crypto provider (ring) — required by both quinn (QUIC)
+    // and the hand-rolled HTTPS scraper. Must happen before any TLS operation.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls crypto provider");
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -72,6 +78,7 @@ async fn run_command(cli: Cli, data_dir: PathBuf) -> Result<(), Box<dyn std::err
         }
         Commands::Config { action } => cmd_config(action, &data_dir),
         Commands::Identity { action } => cmd_identity(action, &data_dir),
+        Commands::Scraper { action } => cmd_scraper(action, &data_dir).await,
         Commands::Doctor { .. } => {
             eprintln!("Doctor not yet implemented (Phase 9)");
             std::process::exit(1);
@@ -522,6 +529,8 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
                 .map_err(|e| format!("read {}: {}", file.display(), e))?;
             let record: crate::model::ContentRecord = serde_json::from_str(&json_str)
                 .map_err(|e| format!("parse record JSON: {}", e))?;
+            let record = crate::sanitize::sanitize_record(&record)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
             let result = store.insert_record(&record)?;
             match result {
                 storage::records::InsertResult::Inserted => println!("Record {} inserted.", record.id),
@@ -537,9 +546,24 @@ fn cmd_record(action: RecordAction, data_dir: &PathBuf) -> Result<(), Box<dyn st
         }
         RecordAction::Announce { id } => {
             match store.get_record(&id)? {
-                Some(_record) => {
-                    eprintln!("Announce not yet implemented (Phase 5)");
-                    std::process::exit(1);
+                Some(record) => {
+                    // Create an announcement for this record
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    let ann = crate::model::Announcement {
+                        record_id: record.id.clone(),
+                        source_hash: record.source_hash.clone(),
+                        schema: record.schema.clone(),
+                        tags: record.tags.clone(),
+                        holder_addr: "127.0.0.1:7744".to_string(),
+                        expires_at: if record.expires_at == 0 { now + 86400 } else { record.expires_at },
+                        sig: "".to_string(),
+                    };
+                    store.insert_announcement(&ann)?;
+                    println!("Record {} announced.", id);
+                    Ok(())
                 }
                 None => {
                     eprintln!("Record not found: {}", id);
@@ -582,6 +606,77 @@ fn cmd_search(query: &str, schema: Option<String>, limit: u32, output: &str, dat
         }
     }
     Ok(())
+}
+
+async fn cmd_scraper(action: cli::cmd::ScraperAction, data_dir: &PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match action {
+        cli::cmd::ScraperAction::Add { name, source, target, refresh, interval_secs, lifecycle, ttl_secs } => {
+            std::fs::create_dir_all(data_dir)?;
+            let config = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+
+            let job = crate::model::ScrapeJob {
+                name: name.clone(),
+                source: crate::model::ScrapeSource::from_str(&source)
+                    .ok_or_else(|| format!("Unknown source type: {}", source))?,
+                target,
+                transform: None,
+                refresh: crate::model::RefreshPolicy::from_str(&refresh)
+                    .ok_or_else(|| format!("Unknown refresh policy: {}", refresh))?,
+                interval_secs,
+                lifecycle: crate::model::Lifecycle::from_str(&lifecycle)
+                    .ok_or_else(|| format!("Unknown lifecycle: {}", lifecycle))?,
+                ttl_secs,
+                max_results: None,
+            };
+
+            // Add job to config
+            let mut cfg = config;
+            cfg.scraper.jobs.push(job);
+            config::save_config(data_dir, &cfg)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+
+            println!("Scraper job '{}' added.", name);
+            Ok(())
+        }
+        cli::cmd::ScraperAction::List => {
+            let config = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            if config.scraper.jobs.is_empty() {
+                println!("No scraper jobs configured.");
+            } else {
+                println!("Scraper jobs ({}):", config.scraper.jobs.len());
+                for job in &config.scraper.jobs {
+                    println!("  {}  source={}  target={}  refresh={}  lifecycle={}",
+                        job.name, job.source, job.target, job.refresh, job.lifecycle);
+                }
+            }
+            Ok(())
+        }
+        cli::cmd::ScraperAction::Run { name } => {
+            let db = storage::open_store(data_dir)?;
+            let config = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            let store = Store::new(db, config.storage);
+
+            let job = config.scraper.jobs.iter().find(|j| j.name == name)
+                .ok_or_else(|| format!("Scraper job '{}' not found", name))?;
+
+            let lifecycle_str = job.lifecycle.as_str();
+            let result = crate::scraper::job::run_url_job(
+                &store, &job.name, &job.target, lifecycle_str, job.ttl_secs,
+            ).await?;
+
+            if result.inserted {
+                println!("Job '{}' completed: record {} inserted.", result.job_name, result.record_id);
+            } else if result.replaced {
+                println!("Job '{}' completed: record {} replaced (dedup).", result.job_name, result.record_id);
+            } else {
+                println!("Job '{}' completed: record {} skipped (older).", result.job_name, result.record_id);
+            }
+            Ok(())
+        }
+    }
 }
 
 fn default_bootstrap_toml() -> String {
