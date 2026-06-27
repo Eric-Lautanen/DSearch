@@ -3,6 +3,7 @@ pub mod index;
 pub mod expiry;
 pub mod quota;
 pub mod migrations;
+pub mod tier2_limiter;
 
 use redb::{Database, TableDefinition};
 use std::path::Path;
