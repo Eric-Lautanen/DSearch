@@ -1,15 +1,15 @@
-/// Route handler for the local HTTP API.
-use std::path::PathBuf;
-use std::sync::Arc;
-use crate::config::DsearchConfig;
-use crate::storage::Store;
+use super::openapi;
 use super::request::HttpRequest;
 use super::response::HttpResponse;
-use super::openapi;
+use crate::config::DsearchConfig;
+use crate::storage::Store;
+/// Route handler for the local HTTP API.
+use std::path::Path;
+use std::sync::Arc;
 
 pub async fn route(
     req: HttpRequest,
-    data_dir: &PathBuf,
+    data_dir: &Path,
     node_id: &str,
     config: &DsearchConfig,
     store: &Arc<Store>,
@@ -67,7 +67,9 @@ fn handle_node(node_id: &str, config: &DsearchConfig, store: &Arc<Store>) -> Htt
 fn handle_search(req: &HttpRequest, store: &Arc<Store>, node_id: &str) -> HttpResponse {
     let query = req.query.get("q").cloned().unwrap_or_default();
     let schema = req.query.get("schema").cloned();
-    let limit: usize = req.query.get("limit")
+    let limit: usize = req
+        .query
+        .get("limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
@@ -105,7 +107,9 @@ fn handle_get_record(path: &str, store: &Arc<Store>, node_id: &str) -> HttpRespo
 
 fn handle_list_records(req: &HttpRequest, store: &Arc<Store>, node_id: &str) -> HttpResponse {
     let schema = req.query.get("schema").map(|s| s.as_str());
-    let limit: usize = req.query.get("limit")
+    let limit: usize = req
+        .query
+        .get("limit")
         .and_then(|v| v.parse().ok())
         .unwrap_or(50);
 
@@ -145,7 +149,7 @@ fn handle_get_schema(path: &str, node_id: &str) -> HttpResponse {
     }
 }
 
-fn handle_list_peers(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_list_peers(data_dir: &Path, node_id: &str) -> HttpResponse {
     let peers_path = data_dir.join("peers.json");
     let peers: Vec<serde_json::Value> = if peers_path.exists() {
         let contents = std::fs::read_to_string(&peers_path).unwrap_or_default();
@@ -160,7 +164,7 @@ fn handle_list_peers(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }
 
-fn handle_add_peer(req: &HttpRequest, data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_add_peer(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpResponse {
     let body: serde_json::Value = match serde_json::from_str(&req.body) {
         Ok(v) => v,
         Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
@@ -219,7 +223,15 @@ async fn handle_run_scraper(
     };
 
     let lifecycle_str = job.lifecycle.as_str();
-    match crate::scraper::job::run_url_job(store, &job.name, &job.target, lifecycle_str, job.ttl_secs).await {
+    match crate::scraper::job::run_url_job(
+        store,
+        &job.name,
+        &job.target,
+        lifecycle_str,
+        job.ttl_secs,
+    )
+    .await
+    {
         Ok(result) => {
             let resp = serde_json::json!({
                 "ok": true,
@@ -249,7 +261,7 @@ fn handle_storage_vacuum(node_id: &str) -> HttpResponse {
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }
 
-fn handle_get_config(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_get_config(data_dir: &Path, node_id: &str) -> HttpResponse {
     match crate::config::load_config(data_dir) {
         Ok(config) => {
             let body = serde_json::json!(config);
@@ -259,7 +271,7 @@ fn handle_get_config(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
     }
 }
 
-fn handle_set_config(req: &HttpRequest, data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_set_config(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpResponse {
     let body: serde_json::Value = match serde_json::from_str(&req.body) {
         Ok(v) => v,
         Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
@@ -274,23 +286,21 @@ fn handle_set_config(req: &HttpRequest, data_dir: &PathBuf, node_id: &str) -> Ht
     };
 
     match crate::config::load_config(data_dir) {
-        Ok(mut config) => {
-            match crate::config::set_config_value(&mut config, &key, &value) {
-                Ok(()) => {
-                    if let Err(e) = crate::config::save_config(data_dir, &config) {
-                        return HttpResponse::internal_error(&e);
-                    }
-                    let resp = serde_json::json!({ "ok": true, "key": key, "value": value });
-                    HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
+        Ok(mut config) => match crate::config::set_config_value(&mut config, &key, &value) {
+            Ok(()) => {
+                if let Err(e) = crate::config::save_config(data_dir, &config) {
+                    return HttpResponse::internal_error(&e);
                 }
-                Err(e) => HttpResponse::bad_request(&e),
+                let resp = serde_json::json!({ "ok": true, "key": key, "value": value });
+                HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
             }
-        }
+            Err(e) => HttpResponse::bad_request(&e),
+        },
         Err(e) => HttpResponse::internal_error(&e),
     }
 }
 
-fn handle_identity(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_identity(data_dir: &Path, node_id: &str) -> HttpResponse {
     let key_path = data_dir.join("identity.key");
     let has_key = key_path.exists();
     let body = serde_json::json!({
@@ -300,15 +310,18 @@ fn handle_identity(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }
 
-fn handle_bootstrap(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
+fn handle_bootstrap(data_dir: &Path, node_id: &str) -> HttpResponse {
     let peers = crate::bootstrap::resolver::resolve_bootstrap_peers(data_dir);
-    let peers_json: Vec<serde_json::Value> = peers.iter().map(|p| {
-        serde_json::json!({
-            "id": p.id,
-            "addr": p.addr,
-            "note": p.note,
+    let peers_json: Vec<serde_json::Value> = peers
+        .iter()
+        .map(|p| {
+            serde_json::json!({
+                "id": p.id,
+                "addr": p.addr,
+                "note": p.note,
+            })
         })
-    }).collect();
+        .collect();
     let body = serde_json::json!({
         "peers": peers_json,
         "count": peers_json.len(),
@@ -319,7 +332,10 @@ fn handle_bootstrap(data_dir: &PathBuf, node_id: &str) -> HttpResponse {
 fn handle_openapi(node_id: &str) -> HttpResponse {
     let spec = openapi::openapi_json(node_id);
     let mut resp = HttpResponse::json(&spec);
-    resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+    resp.headers.insert(
+        "content-type".into(),
+        "application/json; charset=utf-8".into(),
+    );
     resp.with_node_headers(node_id)
 }
 
@@ -336,8 +352,12 @@ fn handle_insert_record(req: &HttpRequest, store: &Arc<Store>, node_id: &str) ->
         Ok(result) => {
             let (action, id) = match result {
                 crate::storage::records::InsertResult::Inserted => ("inserted", record.id.clone()),
-                crate::storage::records::InsertResult::ReplacedNewer => ("replaced", record.id.clone()),
-                crate::storage::records::InsertResult::SkippedOlder => ("skipped", record.id.clone()),
+                crate::storage::records::InsertResult::ReplacedNewer => {
+                    ("replaced", record.id.clone())
+                }
+                crate::storage::records::InsertResult::SkippedOlder => {
+                    ("skipped", record.id.clone())
+                }
             };
             let body = serde_json::json!({"ok": true, "action": action, "id": id});
             HttpResponse::json(&body.to_string()).with_node_headers(node_id)
@@ -423,7 +443,11 @@ fn handle_announce_record(req: &HttpRequest, store: &Arc<Store>, node_id: &str) 
                 schema: record.schema.clone(),
                 tags: record.tags.clone(),
                 holder_addr: "127.0.0.1:7744".to_string(),
-                expires_at: if record.expires_at == 0 { now + 86400 } else { record.expires_at },
+                expires_at: if record.expires_at == 0 {
+                    now + 86400
+                } else {
+                    record.expires_at
+                },
                 sig: "".to_string(),
             };
             match store.insert_announcement(&ann) {

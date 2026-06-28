@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-
-const K_BUCKET_SIZE: usize = 20;
-const MAX_NODE_ID_BITS: usize = 256;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Seconds after which a peer with no activity is considered stale.
 /// Peers not seen for this long are pruned from the routing table.
@@ -20,16 +18,13 @@ pub struct RoutingEntry {
 /// Kademlia-style routing table (Tier 1).
 /// Uses XOR distance for bucket placement.
 pub struct RoutingTable {
-    /// node_id of the local node (hex string)
-    local_id: String,
     /// Flat list of known peers (simplified for Phase 1 — full k-buckets later)
     buckets: BTreeMap<String, RoutingEntry>,
 }
 
 impl RoutingTable {
-    pub fn new(local_id: String) -> Self {
+    pub fn new(_local_id: String) -> Self {
         Self {
-            local_id,
             buckets: BTreeMap::new(),
         }
     }
@@ -70,9 +65,16 @@ impl RoutingTable {
         entries.into_iter().take(k).cloned().collect()
     }
 
-    /// Get a peer by node_id.
+    /// Get a peer by node_id (only used in tests).
+    #[cfg(test)]
     pub fn get(&self, node_id: &str) -> Option<&RoutingEntry> {
         self.buckets.get(node_id)
+    }
+
+    /// Number of known peers (only used in tests).
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.buckets.len()
     }
 
     /// List all known peers.
@@ -80,16 +82,13 @@ impl RoutingTable {
         self.buckets.values().collect()
     }
 
-    /// Number of known peers.
-    pub fn len(&self) -> usize {
-        self.buckets.len()
-    }
-
     /// Remove peers whose `last_seen` is older than `cutoff_secs` ago.
     /// Returns the number of peers pruned.
     pub fn prune_stale(&mut self, cutoff_secs: u64) -> usize {
         let now = now_secs();
-        let stale: Vec<String> = self.buckets.iter()
+        let stale: Vec<String> = self
+            .buckets
+            .iter()
             .filter(|(_, e)| now.saturating_sub(e.last_seen) > cutoff_secs)
             .map(|(id, _)| id.clone())
             .collect();
@@ -104,26 +103,21 @@ impl RoutingTable {
     pub fn prune_dead_peers(&mut self) -> usize {
         self.prune_stale(PEER_STALE_SECS)
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.buckets.is_empty()
-    }
-
-    pub fn local_id(&self) -> &str {
-        &self.local_id
-    }
 }
 
 fn hex_to_bytes(hex: &str) -> Vec<u8> {
     (0..hex.len())
         .step_by(2)
-        .filter_map(|i| hex.get(i..i + 2).and_then(|s| u8::from_str_radix(s, 16).ok()))
+        .filter_map(|i| {
+            hex.get(i..i + 2)
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+        })
         .collect()
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
 }

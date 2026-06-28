@@ -1,8 +1,8 @@
+use rand::Rng;
 /// Gateway API key management — Blake3-hashed storage, per-key rate limiting.
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-use rand::Rng;
 
 /// In-memory rate limit tracker: identifier → (count, window_start_secs)
 struct RateLimitEntry {
@@ -74,8 +74,7 @@ impl GatewayKeyStore {
         keys.push(info.clone());
         let json = serde_json::to_string_pretty(&keys)
             .map_err(|e| format!("serialize gateway keys: {}", e))?;
-        std::fs::write(&keys_path, json)
-            .map_err(|e| format!("write gateway_keys.json: {}", e))?;
+        std::fs::write(&keys_path, json).map_err(|e| format!("write gateway_keys.json: {}", e))?;
 
         Ok((secret_hex, info))
     }
@@ -113,8 +112,7 @@ impl GatewayKeyStore {
 
         let json = serde_json::to_string_pretty(&keys)
             .map_err(|e| format!("serialize gateway keys: {}", e))?;
-        std::fs::write(&keys_path, json)
-            .map_err(|e| format!("write gateway_keys.json: {}", e))?;
+        std::fs::write(&keys_path, json).map_err(|e| format!("write gateway_keys.json: {}", e))?;
 
         Ok(true)
     }
@@ -143,10 +141,12 @@ impl GatewayKeyStore {
 
         let mut limits = self.rate_limits.lock().unwrap_or_else(|e| e.into_inner());
 
-        let entry = limits.entry(identifier.to_string()).or_insert_with(|| RateLimitEntry {
-            count: 0,
-            window_start: now,
-        });
+        let entry = limits
+            .entry(identifier.to_string())
+            .or_insert_with(|| RateLimitEntry {
+                count: 0,
+                window_start: now,
+            });
 
         // Reset window if more than 60 seconds have passed
         if now - entry.window_start >= 60 {
@@ -162,14 +162,14 @@ impl GatewayKeyStore {
 /// Generate a random nickname like "swift-falcon-7x2".
 pub fn generate_nickname() -> String {
     let adjectives = [
-        "swift", "bright", "calm", "dark", "eager", "fair", "gold", "hazy",
-        "iron", "jade", "keen", "lark", "misty", "noble", "opal", "pale",
-        "quiet", "rare", "silver", "true", "vivid", "warm", "zephyr",
+        "swift", "bright", "calm", "dark", "eager", "fair", "gold", "hazy", "iron", "jade", "keen",
+        "lark", "misty", "noble", "opal", "pale", "quiet", "rare", "silver", "true", "vivid",
+        "warm", "zephyr",
     ];
     let animals = [
-        "falcon", "otter", "raven", "tiger", "viper", "wolf", "bear", "deer",
-        "eagle", "fox", "hare", "ibis", "jay", "lynx", "mole", "newt",
-        "owl", "puma", "quail", "rook", "stoat", "ursa", "vole", "wren",
+        "falcon", "otter", "raven", "tiger", "viper", "wolf", "bear", "deer", "eagle", "fox",
+        "hare", "ibis", "jay", "lynx", "mole", "newt", "owl", "puma", "quail", "rook", "stoat",
+        "ursa", "vole", "wren",
     ];
     let mut rng = rand::thread_rng();
     let adj = adjectives[rng.gen_range(0..adjectives.len())];
@@ -196,7 +196,9 @@ mod tests {
         // Validate the key
         assert!(store.validate_key(&secret));
         // Invalid key
-        assert!(!store.validate_key("0000000000000000000000000000000000000000000000000000000000000000"));
+        assert!(
+            !store.validate_key("0000000000000000000000000000000000000000000000000000000000000000")
+        );
     }
 
     #[test]

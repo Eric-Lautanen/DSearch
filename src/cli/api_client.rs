@@ -15,10 +15,7 @@ pub fn read_api_port(data_dir: &Path) -> Option<u16> {
 pub fn api_is_reachable(data_dir: &Path) -> Option<u16> {
     let port = read_api_port(data_dir)?;
     let addr = format!("127.0.0.1:{}", port);
-    if TcpStream::connect_timeout(
-        &addr.parse().ok()?,
-        std::time::Duration::from_secs(2),
-    ).is_ok() {
+    if TcpStream::connect_timeout(&addr.parse().ok()?, std::time::Duration::from_secs(2)).is_ok() {
         Some(port)
     } else {
         None
@@ -31,11 +28,16 @@ pub fn api_get(port: u16, path: &str) -> Result<String, String> {
     let mut stream = TcpStream::connect_timeout(
         &addr.parse().map_err(|e| format!("invalid addr: {}", e))?,
         std::time::Duration::from_secs(5),
-    ).map_err(|e| format!("connect to API: {}", e))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    )
+    .map_err(|e| format!("connect to API: {}", e))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
 
     let request = format!("GET {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAccept: application/json\r\nConnection: close\r\n\r\n", path, port);
-    stream.write_all(request.as_bytes()).map_err(|e| format!("write: {}", e))?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {}", e))?;
     stream.flush().map_err(|e| format!("flush: {}", e))?;
 
     let mut response = Vec::new();
@@ -75,14 +77,19 @@ pub fn api_post(port: u16, path: &str, body: &str) -> Result<String, String> {
     let mut stream = TcpStream::connect_timeout(
         &addr.parse().map_err(|e| format!("invalid addr: {}", e))?,
         std::time::Duration::from_secs(5),
-    ).map_err(|e| format!("connect to API: {}", e))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(10))).ok();
+    )
+    .map_err(|e| format!("connect to API: {}", e))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .ok();
 
     let request = format!(
         "POST {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nAccept: application/json\r\nConnection: close\r\n\r\n{}",
         path, port, body.len(), body
     );
-    stream.write_all(request.as_bytes()).map_err(|e| format!("write: {}", e))?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {}", e))?;
     stream.flush().map_err(|e| format!("flush: {}", e))?;
 
     let mut response = Vec::new();

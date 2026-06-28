@@ -1,8 +1,12 @@
-use redb::{Database, ReadableTable};
 use crate::config::StorageConfig;
+use redb::{Database, ReadableTable};
 
 /// Check if inserting a record would exceed the storage quota.
-pub fn check_quota(db: &Database, config: &StorageConfig, additional_bytes: u64) -> Result<(), String> {
+pub fn check_quota(
+    db: &Database,
+    config: &StorageConfig,
+    additional_bytes: u64,
+) -> Result<(), String> {
     if config.quota_mb == 0 {
         return Ok(());
     }
@@ -22,12 +26,10 @@ pub fn check_quota(db: &Database, config: &StorageConfig, additional_bytes: u64)
                 }
                 Ok(())
             }
-            "pause_scraper" => {
-                Err(format!(
-                    "Storage quota exceeded ({} MB). Scraper should pause.",
-                    config.quota_mb
-                ))
-            }
+            "pause_scraper" => Err(format!(
+                "Storage quota exceeded ({} MB). Scraper should pause.",
+                config.quota_mb
+            )),
             "warn_only" => {
                 tracing::warn!(
                     "Storage quota exceeded ({} MB). warn_only policy — insert allowed.",
@@ -35,12 +37,10 @@ pub fn check_quota(db: &Database, config: &StorageConfig, additional_bytes: u64)
                 );
                 Ok(())
             }
-            _ => {
-                Err(format!(
-                    "Storage quota exceeded ({} MB). Unknown quota_action: {}",
-                    config.quota_mb, config.quota_action
-                ))
-            }
+            _ => Err(format!(
+                "Storage quota exceeded ({} MB). Unknown quota_action: {}",
+                config.quota_mb, config.quota_action
+            )),
         }
     } else {
         Ok(())
@@ -52,19 +52,25 @@ fn evict_oldest(db: &Database, needed_bytes: u64) -> Result<u64, String> {
     // Phase 1: collect candidates (read-only)
     let mut candidates: Vec<(String, String, u64, u64)> = Vec::new(); // (id, source_hash, created_at, json_len)
     {
-        let read_tx = db.begin_read().map_err(|e| format!("evict read tx: {}", e))?;
-        let records = read_tx.open_table(crate::storage::records::RECORDS_TABLE)
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("evict read tx: {}", e))?;
+        let records = read_tx
+            .open_table(crate::storage::records::RECORDS_TABLE)
             .map_err(|e| format!("open records for evict: {}", e))?;
-        let pins = read_tx.open_table(crate::storage::records::PINS_TABLE)
+        let pins = read_tx
+            .open_table(crate::storage::records::PINS_TABLE)
             .map_err(|e| format!("open pins for evict: {}", e))?;
 
         for entry_result in records.iter().map_err(|e| format!("evict iter: {}", e))? {
-            let (key_guard, value_guard) = entry_result.map_err(|e| format!("evict read entry: {}", e))?;
+            let (key_guard, value_guard) =
+                entry_result.map_err(|e| format!("evict read entry: {}", e))?;
             let key = key_guard.value().to_string();
             let json_str = value_guard.value();
             let json_len = json_str.len() as u64;
 
-            let pinned = pins.get(&key.as_str())
+            let pinned = pins
+                .get(&key.as_str())
                 .map(|v| v.is_some())
                 .unwrap_or(false);
             if pinned {
@@ -96,17 +102,22 @@ fn evict_oldest(db: &Database, needed_bytes: u64) -> Result<u64, String> {
     }
 
     // Phase 2: delete the evicted records
-    let write_tx = db.begin_write().map_err(|e| format!("evict write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("evict write tx: {}", e))?;
     for (id, source_hash) in &to_delete {
         {
-            let mut records = write_tx.open_table(crate::storage::records::RECORDS_TABLE)
+            let mut records = write_tx
+                .open_table(crate::storage::records::RECORDS_TABLE)
                 .map_err(|e| format!("open records for evict delete: {}", e))?;
-            records.remove(&id.as_str())
+            records
+                .remove(&id.as_str())
                 .map_err(|e| format!("remove evicted record: {}", e))?;
         }
         {
             let should_remove = {
-                let source_index = write_tx.open_table(crate::storage::records::SOURCE_INDEX_TABLE)
+                let source_index = write_tx
+                    .open_table(crate::storage::records::SOURCE_INDEX_TABLE)
                     .map_err(|e| format!("open source_index for evict check: {}", e))?;
                 let result = match source_index.get(&source_hash.as_str()) {
                     Ok(Some(existing_id)) => existing_id.value() == id.as_str(),
@@ -115,36 +126,50 @@ fn evict_oldest(db: &Database, needed_bytes: u64) -> Result<u64, String> {
                 result
             };
             if should_remove {
-                let mut source_index = write_tx.open_table(crate::storage::records::SOURCE_INDEX_TABLE)
+                let mut source_index = write_tx
+                    .open_table(crate::storage::records::SOURCE_INDEX_TABLE)
                     .map_err(|e| format!("reopen source_index for evict delete: {}", e))?;
-                source_index.remove(&source_hash.as_str())
+                source_index
+                    .remove(&source_hash.as_str())
                     .map_err(|e| format!("remove source_index for evict: {}", e))?;
             }
         }
     }
-    write_tx.commit().map_err(|e| format!("evict commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("evict commit: {}", e))?;
 
-    tracing::info!("Quota eviction: removed {} records, freed {} bytes", to_delete.len(), freed);
+    tracing::info!(
+        "Quota eviction: removed {} records, freed {} bytes",
+        to_delete.len(),
+        freed
+    );
     Ok(freed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContentRecord, ScrapeSource, RefreshPolicy, schema};
+    use crate::model::{schema, ContentRecord, RefreshPolicy, ScrapeSource};
     use tempfile::TempDir;
 
     fn open_test_db() -> (TempDir, Database) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("store.redb");
-        let db = Database::builder()
-            .create(&path)
-            .expect("create db");
+        let db = Database::builder().create(&path).expect("create db");
         let write_tx = db.begin_write().unwrap();
-        write_tx.open_table(crate::storage::records::RECORDS_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::SOURCE_INDEX_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::PINS_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::ANNOUNCEMENTS_TABLE).unwrap();
+        write_tx
+            .open_table(crate::storage::records::RECORDS_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::SOURCE_INDEX_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::PINS_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::ANNOUNCEMENTS_TABLE)
+            .unwrap();
         write_tx.commit().unwrap();
         (dir, db)
     }
@@ -221,7 +246,11 @@ mod tests {
         match result {
             Ok(()) => {
                 let count = crate::storage::records::record_count(&db).unwrap();
-                assert!(count < 5, "expected some records evicted, but count={}", count);
+                assert!(
+                    count < 5,
+                    "expected some records evicted, but count={}",
+                    count
+                );
             }
             Err(e) => {
                 assert!(e.contains("quota"), "unexpected error: {}", e);

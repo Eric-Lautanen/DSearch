@@ -1,12 +1,12 @@
-/// Sanitize a string for safe storage and display.
-///
-/// Rules:
-/// - Valid UTF-8 only
-/// - No control characters 0x00–0x1F except 0x0A (newline)
-/// - No Unicode Cf (format) or Cc (control) categories
-/// - Caps: 1 MB record, 256 B key, 64 KB value
+//! Sanitize a string for safe storage and display.
+//!
+//! Rules:
+//! - Valid UTF-8 only
+//! - No control characters 0x00–0x1F except 0x0A (newline)
+//! - No Unicode Cf (format) or Cc (control) categories
+//! - Caps: 1 MB record, 256 B key, 64 KB value
 
-/// Maximum record size in bytes.
+///   Maximum record size in bytes.
 pub const MAX_RECORD_SIZE: usize = 1_048_576;
 /// Maximum key size in bytes.
 pub const MAX_KEY_SIZE: usize = 256;
@@ -69,7 +69,10 @@ fn is_format_char(ch: char) -> bool {
 /// Validate a record body size.
 pub fn validate_body_size(body: &str) -> Result<(), String> {
     if body.len() > MAX_RECORD_SIZE {
-        Err(format!("record body exceeds 1 MB limit ({} bytes)", body.len()))
+        Err(format!(
+            "record body exceeds 1 MB limit ({} bytes)",
+            body.len()
+        ))
     } else {
         Ok(())
     }
@@ -78,7 +81,10 @@ pub fn validate_body_size(body: &str) -> Result<(), String> {
 /// Validate a tag key size.
 pub fn validate_key_size(key: &str) -> Result<(), String> {
     if key.len() > MAX_KEY_SIZE {
-        Err(format!("tag key exceeds 256 byte limit ({} bytes)", key.len()))
+        Err(format!(
+            "tag key exceeds 256 byte limit ({} bytes)",
+            key.len()
+        ))
     } else {
         Ok(())
     }
@@ -87,7 +93,10 @@ pub fn validate_key_size(key: &str) -> Result<(), String> {
 /// Validate a tag value size.
 pub fn validate_value_size(value: &str) -> Result<(), String> {
     if value.len() > MAX_VALUE_SIZE {
-        Err(format!("tag value exceeds 64 KB limit ({} bytes)", value.len()))
+        Err(format!(
+            "tag value exceeds 64 KB limit ({} bytes)",
+            value.len()
+        ))
     } else {
         Ok(())
     }
@@ -95,7 +104,9 @@ pub fn validate_value_size(value: &str) -> Result<(), String> {
 
 /// Full sanitization pipeline for a ContentRecord.
 /// Returns the sanitized record or an error with the rejection reason.
-pub fn sanitize_record(record: &crate::model::ContentRecord) -> Result<crate::model::ContentRecord, String> {
+pub fn sanitize_record(
+    record: &crate::model::ContentRecord,
+) -> Result<crate::model::ContentRecord, String> {
     // Sanitize body
     let body = sanitize_string(&record.body)?;
     validate_body_size(&body)?;

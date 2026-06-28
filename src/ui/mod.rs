@@ -1,12 +1,11 @@
+use eframe::egui;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use eframe;
-use eframe::egui;
 
+mod bootstrap_panel;
 mod onboarding;
 mod search;
 mod settings;
-mod bootstrap_panel;
 mod tray;
 
 pub use onboarding::OnboardingState;
@@ -62,13 +61,6 @@ impl ApiHelper {
         let port: u16 = contents.trim().parse().ok()?;
         crate::cli::api_client::api_get(port, path).ok()
     }
-
-    pub fn api_post(&self, path: &str, body: &str) -> Option<String> {
-        let port_path = self.data_dir.join("api.port");
-        let contents = std::fs::read_to_string(port_path).ok()?;
-        let port: u16 = contents.trim().parse().ok()?;
-        crate::cli::api_client::api_post(port, path, body).ok()
-    }
 }
 
 impl DsearchApp {
@@ -93,16 +85,23 @@ impl DsearchApp {
     }
 
     fn api(&self) -> ApiHelper {
-        ApiHelper { data_dir: self.data_dir.clone() }
+        ApiHelper {
+            data_dir: self.data_dir.clone(),
+        }
     }
 
     fn refresh_status(&mut self) {
         let api = self.api();
         if let Some(body) = api.api_get("/node") {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                self.status.role = v.get("role").and_then(|v| v.as_str()).unwrap_or("light").to_string();
+                self.status.role = v
+                    .get("role")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("light")
+                    .to_string();
                 self.status.peers = v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                self.status.records = v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                self.status.records =
+                    v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             }
         }
         if let Some(body) = api.api_get("/storage") {
@@ -120,7 +119,9 @@ impl DsearchApp {
         }
         *self.api_port.lock().unwrap() = {
             let port_path = self.data_dir.join("api.port");
-            std::fs::read_to_string(port_path).ok().and_then(|s| s.trim().parse().ok())
+            std::fs::read_to_string(port_path)
+                .ok()
+                .and_then(|s| s.trim().parse().ok())
         };
     }
 }
@@ -146,14 +147,22 @@ impl eframe::App for DsearchApp {
             ui.horizontal(|ui: &mut egui::Ui| {
                 ui.selectable_value(&mut self.panel, Panel::Search, "🔍 Search");
                 ui.selectable_value(&mut self.panel, Panel::Settings, "⚙ Settings");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
-                    let node_id = self.node_id.lock().unwrap();
-                    if !node_id.is_empty() {
-                        ui.label(egui::RichText::new(format!("Node: {}…", &node_id[..8.min(node_id.len())]))
-                            .small()
-                            .color(egui::Color32::GRAY));
-                    }
-                });
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui: &mut egui::Ui| {
+                        let node_id = self.node_id.lock().unwrap();
+                        if !node_id.is_empty() {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "Node: {}…",
+                                    &node_id[..8.min(node_id.len())]
+                                ))
+                                .small()
+                                .color(egui::Color32::GRAY),
+                            );
+                        }
+                    },
+                );
             });
         });
 
@@ -165,7 +174,11 @@ impl eframe::App for DsearchApp {
                 } else {
                     egui::Color32::from_rgb(0xF4, 0x43, 0x36)
                 };
-                ui.painter().circle_filled(ui.available_rect_before_wrap().left_center() + egui::vec2(6.0, 0.0), 5.0, dot_color);
+                ui.painter().circle_filled(
+                    ui.available_rect_before_wrap().left_center() + egui::vec2(6.0, 0.0),
+                    5.0,
+                    dot_color,
+                );
                 ui.add_space(14.0);
                 ui.label(egui::RichText::new(format!("Role: {}", self.status.role)).small());
                 ui.separator();
@@ -173,22 +186,36 @@ impl eframe::App for DsearchApp {
                 ui.separator();
                 ui.label(egui::RichText::new(format!("Records: {}", self.status.records)).small());
                 ui.separator();
-                ui.label(egui::RichText::new(format!("Tier 2: {:.1} MB", self.status.tier2_size_mb)).small());
+                ui.label(
+                    egui::RichText::new(format!("Tier 2: {:.1} MB", self.status.tier2_size_mb))
+                        .small(),
+                );
                 ui.separator();
-                ui.label(egui::RichText::new(format!("Bandwidth: {:.0} Mbps", self.status.bandwidth_mbps)).small());
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui: &mut egui::Ui| {
-                    ui.label(egui::RichText::new(format!("📁 {}", self.data_dir.display())).small().color(egui::Color32::from_rgb(0x64, 0xB5, 0xF6)));
-                });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Bandwidth: {:.0} Mbps",
+                        self.status.bandwidth_mbps
+                    ))
+                    .small(),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui: &mut egui::Ui| {
+                        ui.label(
+                            egui::RichText::new(format!("📁 {}", self.data_dir.display()))
+                                .small()
+                                .color(egui::Color32::from_rgb(0x64, 0xB5, 0xF6)),
+                        );
+                    },
+                );
             });
         });
 
         // Central content — use the ApiHelper to avoid double-&mut-self
         let api = self.api();
-        egui::CentralPanel::default().show_inside(ui, |ui: &mut egui::Ui| {
-            match self.panel {
-                Panel::Search => self.search.ui(ui, &api),
-                Panel::Settings => self.settings.ui(ui, &api),
-            }
+        egui::CentralPanel::default().show_inside(ui, |ui: &mut egui::Ui| match self.panel {
+            Panel::Search => self.search.ui(ui, &api),
+            Panel::Settings => self.settings.ui(ui, &api),
         });
 
         // Tray icon management
@@ -211,5 +238,6 @@ pub fn run_ui(data_dir: PathBuf) -> Result<(), Box<dyn std::error::Error + Send 
         "DSearch",
         options,
         Box::new(|_cc| Ok(Box::new(DsearchApp::new(data_dir)))),
-    ).map_err(|e| format!("eframe error: {}", e).into())
+    )
+    .map_err(|e| format!("eframe error: {}", e).into())
 }

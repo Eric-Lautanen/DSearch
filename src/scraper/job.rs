@@ -1,4 +1,4 @@
-use crate::model::{ContentRecord, ScrapeSource, RefreshPolicy, schema};
+use crate::model::{schema, ContentRecord, RefreshPolicy, ScrapeSource};
 use crate::sanitize::sanitize_record;
 use crate::storage::Store;
 use crate::trust::sign::{compute_record_id, compute_source_hash};
@@ -56,7 +56,6 @@ pub async fn run_url_job(
         record_id: record.id.clone(),
         inserted: matches!(result, crate::storage::records::InsertResult::Inserted),
         replaced: matches!(result, crate::storage::records::InsertResult::ReplacedNewer),
-        skipped: matches!(result, crate::storage::records::InsertResult::SkippedOlder),
     })
 }
 
@@ -66,7 +65,6 @@ pub struct ScrapeResult {
     pub record_id: String,
     pub inserted: bool,
     pub replaced: bool,
-    pub skipped: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,8 +104,8 @@ fn fetch_url_blocking(url: &str) -> Result<String, String> {
         fetch_http_blocking(&host, port, &path)?
     };
 
-    let response = String::from_utf8(body_bytes)
-        .map_err(|e| format!("response not valid UTF-8: {}", e))?;
+    let response =
+        String::from_utf8(body_bytes).map_err(|e| format!("response not valid UTF-8: {}", e))?;
     if let Some(idx) = response.find("\r\n\r\n") {
         Ok(response[idx + 4..].to_string())
     } else if let Some(idx) = response.find("\n\n") {
@@ -126,13 +124,15 @@ fn parse_url(url: &str) -> Result<(String, String, u16, bool), String> {
         return Err(format!("unsupported URL scheme: {}", url));
     };
     let is_https = scheme == "https";
-    let (host_port, path) = rest.find('/')
+    let (host_port, path) = rest
+        .find('/')
         .map(|i| (&rest[..i], &rest[i..]))
         .unwrap_or((rest, "/"));
-    let (host, port) = host_port.rfind(':')
+    let (host, port) = host_port
+        .rfind(':')
         .map(|i| {
             let h = host_port[..i].to_string();
-            let p: u16 = host_port[i+1..].parse().map_err(|_| "invalid port")?;
+            let p: u16 = host_port[i + 1..].parse().map_err(|_| "invalid port")?;
             Ok::<_, String>((h, p))
         })
         .transpose()?
@@ -145,23 +145,29 @@ fn fetch_http_blocking(host: &str, port: u16, path: &str) -> Result<Vec<u8>, Str
     use std::io::{Read, Write};
 
     let addr = format!("{}:{}", host, port);
-    let mut stream = std::net::TcpStream::connect(&addr)
-        .map_err(|e| format!("connect to {}: {}", addr, e))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
+    let mut stream =
+        std::net::TcpStream::connect(&addr).map_err(|e| format!("connect to {}: {}", addr, e))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
 
     let request = format!(
         "GET {} HTTP/1.1\r\nHost: {}\r\nUser-Agent: dsearch/0.1\r\nAccept: */*\r\nConnection: close\r\n\r\n",
         path, host
     );
-    stream.write_all(request.as_bytes())
+    stream
+        .write_all(request.as_bytes())
         .map_err(|e| format!("write request: {}", e))?;
 
     let mut response = Vec::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = stream.read(&mut buf)
+        let n = stream
+            .read(&mut buf)
             .map_err(|e| format!("read response: {}", e))?;
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         response.extend_from_slice(&buf[..n]);
         if response.len() > 2 * 1024 * 1024 {
             return Err("response too large (>2 MB)".to_string());
@@ -188,9 +194,11 @@ fn fetch_https_blocking(host: &str, port: u16, path: &str) -> Result<Vec<u8>, St
         .to_owned();
 
     let addr = format!("{}:{}", host, port);
-    let mut stream = std::net::TcpStream::connect(&addr)
-        .map_err(|e| format!("connect to {}: {}", addr, e))?;
-    stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).ok();
+    let mut stream =
+        std::net::TcpStream::connect(&addr).map_err(|e| format!("connect to {}: {}", addr, e))?;
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+        .ok();
 
     let mut conn = rustls::ClientConnection::new(config, name)
         .map_err(|e| format!("TLS init for {}: {:?}", host, e))?;
@@ -255,13 +263,19 @@ fn load_native_certs(root_store: &mut rustls::RootCertStore) {
 /// PEM is just base64 between `-----BEGIN CERTIFICATE-----` / `-----END CERTIFICATE-----`
 /// delimiters — plain format logic, hand-rolled per the roadmap.
 fn try_load_pem_file(root_store: &mut rustls::RootCertStore, path: &str) {
-    let Ok(pem_data) = std::fs::read(path) else { return };
+    let Ok(pem_data) = std::fs::read(path) else {
+        return;
+    };
     let pem = String::from_utf8_lossy(&pem_data);
     for block in pem.split("-----BEGIN CERTIFICATE-----").skip(1) {
-        let Some(b64) = block.split("-----END CERTIFICATE-----").next() else { continue };
+        let Some(b64) = block.split("-----END CERTIFICATE-----").next() else {
+            continue;
+        };
         let b64_clean: String = b64.chars().filter(|c| !c.is_ascii_whitespace()).collect();
         if let Ok(der) = base64_decode(&b64_clean) {
-            root_store.add(rustls::pki_types::CertificateDer::from(der)).ok();
+            root_store
+                .add(rustls::pki_types::CertificateDer::from(der))
+                .ok();
         }
     }
 }
@@ -281,7 +295,9 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     let mut bits: usize = 0;
 
     for ch in input.chars() {
-        let val = TABLE.iter().position(|&b| b == ch as u8)
+        let val = TABLE
+            .iter()
+            .position(|&b| b == ch as u8)
             .ok_or_else(|| format!("invalid base64 char: {}", ch))? as u32;
         acc = (acc << 6) | val;
         bits += 6;

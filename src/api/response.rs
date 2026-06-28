@@ -16,35 +16,50 @@ impl HttpResponse {
 
     pub fn json(body: &str) -> Self {
         let mut resp = Self::ok(body);
-        resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+        resp.headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         resp
     }
 
     pub fn not_found(error: &str) -> Self {
         let body = serde_json::json!({"error": error, "code": 404}).to_string();
         let mut resp = Self::new(404, "Not Found", body);
-        resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+        resp.headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         resp
     }
 
     pub fn bad_request(error: &str) -> Self {
         let body = serde_json::json!({"error": error, "code": 400}).to_string();
         let mut resp = Self::new(400, "Bad Request", body);
-        resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+        resp.headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         resp
     }
 
     pub fn internal_error(error: &str) -> Self {
         let body = serde_json::json!({"error": error, "code": 500}).to_string();
         let mut resp = Self::new(500, "Internal Server Error", body);
-        resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+        resp.headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         resp
     }
 
     pub fn method_not_allowed(error: &str) -> Self {
         let body = serde_json::json!({"error": error, "code": 405}).to_string();
         let mut resp = Self::new(405, "Method Not Allowed", body);
-        resp.headers.insert("content-type".into(), "application/json; charset=utf-8".into());
+        resp.headers.insert(
+            "content-type".into(),
+            "application/json; charset=utf-8".into(),
+        );
         resp
     }
 
@@ -69,7 +84,8 @@ impl HttpResponse {
 
     /// Add X-Record-Count header.
     pub fn with_record_count(mut self, count: usize) -> Self {
-        self.headers.insert("x-record-count".into(), count.to_string());
+        self.headers
+            .insert("x-record-count".into(), count.to_string());
         self
     }
 
@@ -78,7 +94,9 @@ impl HttpResponse {
         let mut out = Vec::new();
 
         // Status line
-        out.extend_from_slice(format!("HTTP/1.1 {} {}\r\n", self.status, self.status_text).as_bytes());
+        out.extend_from_slice(
+            format!("HTTP/1.1 {} {}\r\n", self.status, self.status_text).as_bytes(),
+        );
 
         // Content-Length
         out.extend_from_slice(format!("content-length: {}\r\n", self.body.len()).as_bytes());

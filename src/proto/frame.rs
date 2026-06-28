@@ -1,4 +1,4 @@
-use crate::proto::msg_type::{MsgType, PROTOCOL_VERSION, MAX_PAYLOAD_SIZE};
+use crate::proto::msg_type::{MsgType, MAX_PAYLOAD_SIZE, PROTOCOL_VERSION};
 use serde::Deserialize;
 use std::io;
 
@@ -29,37 +29,6 @@ impl Frame {
         buf.extend_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&self.payload);
         buf
-    }
-
-    /// Decode frame from bytes. Returns Some(Frame) if complete, None if incomplete.
-    pub fn decode(data: &[u8]) -> Result<Option<Self>, FrameError> {
-        if data.len() < HEADER_SIZE {
-            return Ok(None);
-        }
-
-        let version = data[0];
-        let msg_byte = data[1];
-        let length = u32::from_be_bytes([data[2], data[3], data[4], data[5]]);
-
-        if length > MAX_PAYLOAD_SIZE {
-            return Err(FrameError::PayloadTooLarge { got: length, max: MAX_PAYLOAD_SIZE });
-        }
-
-        let total = HEADER_SIZE + length as usize;
-        if data.len() < total {
-            return Ok(None);
-        }
-
-        let msg_type = MsgType::from_u8(msg_byte).ok_or(FrameError::UnknownMsgType(msg_byte))?;
-        let payload = data[HEADER_SIZE..total].to_vec();
-
-        Ok(Some(Frame { version, msg_type, payload }))
-    }
-
-    /// Encode a typed message as a frame.
-    pub fn encode_msg<T: serde::Serialize>(msg_type: MsgType, msg: &T) -> Result<Vec<u8>, serde_json::Error> {
-        let payload = serde_json::to_vec(msg)?;
-        Ok(Frame::new(msg_type, payload).encode())
     }
 
     /// Decode payload as a typed message.
@@ -102,7 +71,7 @@ pub async fn read_frame(recv: &mut quinn::RecvStream) -> Result<Option<Frame>, F
         Ok(()) => {}
         Err(quinn::ReadExactError::FinishedEarly(_)) => return Ok(None),
         Err(quinn::ReadExactError::ReadError(e)) => {
-            return Err(FrameError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())));
+            return Err(FrameError::Io(io::Error::other(e.to_string())));
         }
     }
 
@@ -111,7 +80,10 @@ pub async fn read_frame(recv: &mut quinn::RecvStream) -> Result<Option<Frame>, F
     let length = u32::from_be_bytes([header[2], header[3], header[4], header[5]]);
 
     if length > MAX_PAYLOAD_SIZE {
-        return Err(FrameError::PayloadTooLarge { got: length, max: MAX_PAYLOAD_SIZE });
+        return Err(FrameError::PayloadTooLarge {
+            got: length,
+            max: MAX_PAYLOAD_SIZE,
+        });
     }
 
     let msg_type = MsgType::from_u8(msg_byte).ok_or(FrameError::UnknownMsgType(msg_byte))?;
@@ -122,56 +94,22 @@ pub async fn read_frame(recv: &mut quinn::RecvStream) -> Result<Option<Frame>, F
             Ok(()) => {}
             Err(quinn::ReadExactError::FinishedEarly(_)) => return Ok(None),
             Err(quinn::ReadExactError::ReadError(e)) => {
-                return Err(FrameError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())));
+                return Err(FrameError::Io(io::Error::other(e.to_string())));
             }
         }
     }
 
-    Ok(Some(Frame { version, msg_type, payload }))
+    Ok(Some(Frame {
+        version,
+        msg_type,
+        payload,
+    }))
 }
 
 /// Async write a frame to a QUIC send stream.
-pub async fn write_frame(send: &mut quinn::SendStream, frame: &Frame) -> Result<(), quinn::WriteError> {
+pub async fn write_frame(
+    send: &mut quinn::SendStream,
+    frame: &Frame,
+) -> Result<(), quinn::WriteError> {
     send.write_all(&frame.encode()).await
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::proto::msg_type::Ping;
-
-    #[test]
-    fn roundtrip() {
-        let ping = Ping { nonce: 42 };
-        let payload = serde_json::to_vec(&ping).unwrap();
-        let frame = Frame::new(MsgType::Ping, payload);
-        let encoded = frame.encode();
-        let decoded = Frame::decode(&encoded).unwrap().unwrap();
-        assert_eq!(decoded.version, PROTOCOL_VERSION);
-        assert_eq!(decoded.msg_type, MsgType::Ping);
-        let ping2: Ping = decoded.decode_payload().unwrap();
-        assert_eq!(ping2.nonce, 42);
-    }
-
-    #[test]
-    fn incomplete_header() {
-        assert!(Frame::decode(&[0x01, 0x03]).unwrap().is_none());
-    }
-
-    #[test]
-    fn incomplete_payload() {
-        let ping = Ping { nonce: 1 };
-        let payload = serde_json::to_vec(&ping).unwrap();
-        let frame = Frame::new(MsgType::Ping, payload);
-        let mut encoded = frame.encode();
-        encoded.truncate(8);
-        assert!(Frame::decode(&encoded).unwrap().is_none());
-    }
-
-    #[test]
-    fn oversized_payload() {
-        let mut data = vec![PROTOCOL_VERSION, 0x03];
-        data.extend_from_slice(&(MAX_PAYLOAD_SIZE + 1).to_be_bytes());
-        assert!(Frame::decode(&data).is_err());
-    }
 }

@@ -1,5 +1,5 @@
-use eframe::egui;
 use super::ApiHelper;
+use eframe::egui;
 
 #[derive(Default)]
 pub struct BootstrapPanel {
@@ -19,15 +19,21 @@ impl BootstrapPanel {
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(peers) = v.get("peers").and_then(|p| p.as_array()) {
                     if peers.is_empty() {
-                        ui.label(egui::RichText::new("No bootstrap peers configured.").color(egui::Color32::GRAY));
+                        ui.label(
+                            egui::RichText::new("No bootstrap peers configured.")
+                                .color(egui::Color32::GRAY),
+                        );
                     } else {
                         ui.group(|ui: &mut egui::Ui| {
-                            ui.label(egui::RichText::new(format!("Configured Peers ({})", peers.len())).strong());
+                            ui.label(
+                                egui::RichText::new(format!("Configured Peers ({})", peers.len()))
+                                    .strong(),
+                            );
                             ui.add_space(4.0);
 
-                            egui::Grid::new("bootstrap_peers_grid")
-                                .striped(true)
-                                .show(ui, |ui: &mut egui::Ui| {
+                            egui::Grid::new("bootstrap_peers_grid").striped(true).show(
+                                ui,
+                                |ui: &mut egui::Ui| {
                                     ui.label(egui::RichText::new("ID").strong());
                                     ui.label(egui::RichText::new("Address").strong());
                                     ui.label(egui::RichText::new("Source").strong());
@@ -35,22 +41,40 @@ impl BootstrapPanel {
                                     ui.end_row();
 
                                     for (i, p) in peers.iter().enumerate() {
-                                        let id = p.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                                        let addr = p.get("addr").and_then(|v| v.as_str()).unwrap_or("?");
-                                        let note = p.get("note").and_then(|v| v.as_str()).unwrap_or("");
+                                        let id =
+                                            p.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let addr =
+                                            p.get("addr").and_then(|v| v.as_str()).unwrap_or("?");
+                                        let note =
+                                            p.get("note").and_then(|v| v.as_str()).unwrap_or("");
                                         let source = if i < 3 { "built-in" } else { "user" };
 
-                                        ui.label(egui::RichText::new(format!("{}…", &id[..8.min(id.len())])).small());
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "{}…",
+                                                &id[..8.min(id.len())]
+                                            ))
+                                            .small(),
+                                        );
                                         ui.label(egui::RichText::new(addr).small());
-                                        ui.label(egui::RichText::new(source).small().color(match source {
-                                            "built-in" => egui::Color32::from_rgb(0x4C, 0xAF, 0x50),
-                                            "dns" => egui::Color32::from_rgb(0x64, 0xB5, 0xF6),
-                                            _ => egui::Color32::from_rgb(0xFF, 0x98, 0x00),
-                                        }));
-                                        ui.label(egui::RichText::new(note).small().color(egui::Color32::GRAY));
+                                        ui.label(egui::RichText::new(source).small().color(
+                                            match source {
+                                                "built-in" => {
+                                                    egui::Color32::from_rgb(0x4C, 0xAF, 0x50)
+                                                }
+                                                "dns" => egui::Color32::from_rgb(0x64, 0xB5, 0xF6),
+                                                _ => egui::Color32::from_rgb(0xFF, 0x98, 0x00),
+                                            },
+                                        ));
+                                        ui.label(
+                                            egui::RichText::new(note)
+                                                .small()
+                                                .color(egui::Color32::GRAY),
+                                        );
                                         ui.end_row();
                                     }
-                                });
+                                },
+                            );
                         });
                     }
                 }
@@ -66,11 +90,15 @@ impl BootstrapPanel {
                 for peer in &peers {
                     let addr = peer.addr.clone();
                     let result = std::net::TcpStream::connect_timeout(
-                        &addr.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()),
+                        &addr
+                            .parse()
+                            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()),
                         std::time::Duration::from_secs(3),
                     );
                     match result {
-                        Ok(_) => self.test_results.push((addr, true, "reachable".to_string())),
+                        Ok(_) => self
+                            .test_results
+                            .push((addr, true, "reachable".to_string())),
                         Err(e) => self.test_results.push((addr, false, e.to_string())),
                     }
                 }
@@ -88,12 +116,22 @@ impl BootstrapPanel {
                 for (addr, reachable, detail) in &self.test_results {
                     ui.horizontal(|ui: &mut egui::Ui| {
                         if *reachable {
-                            ui.label(egui::RichText::new("✓").color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)));
+                            ui.label(
+                                egui::RichText::new("✓")
+                                    .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
+                            );
                         } else {
-                            ui.label(egui::RichText::new("✗").color(egui::Color32::from_rgb(0xF4, 0x43, 0x36)));
+                            ui.label(
+                                egui::RichText::new("✗")
+                                    .color(egui::Color32::from_rgb(0xF4, 0x43, 0x36)),
+                            );
                         }
                         ui.label(addr);
-                        ui.label(egui::RichText::new(detail).small().color(egui::Color32::GRAY));
+                        ui.label(
+                            egui::RichText::new(detail)
+                                .small()
+                                .color(egui::Color32::GRAY),
+                        );
                     });
                 }
             });
@@ -104,21 +142,33 @@ impl BootstrapPanel {
         ui.group(|ui: &mut egui::Ui| {
             ui.label(egui::RichText::new("Add Peer Manually").strong());
             ui.add_space(4.0);
-            ui.horizontal(|ui: &mut egui::Ui| { ui.label("ID:"); ui.text_edit_singleline(&mut self.new_peer_id); });
-            ui.horizontal(|ui: &mut egui::Ui| { ui.label("Addr:"); ui.text_edit_singleline(&mut self.new_peer_addr); });
-            ui.horizontal(|ui: &mut egui::Ui| { ui.label("Note:"); ui.text_edit_singleline(&mut self.new_peer_note); });
+            ui.horizontal(|ui: &mut egui::Ui| {
+                ui.label("ID:");
+                ui.text_edit_singleline(&mut self.new_peer_id);
+            });
+            ui.horizontal(|ui: &mut egui::Ui| {
+                ui.label("Addr:");
+                ui.text_edit_singleline(&mut self.new_peer_addr);
+            });
+            ui.horizontal(|ui: &mut egui::Ui| {
+                ui.label("Note:");
+                ui.text_edit_singleline(&mut self.new_peer_note);
+            });
             ui.add_space(4.0);
-            if ui.button("Add Peer").clicked() && !self.new_peer_id.is_empty() && !self.new_peer_addr.is_empty() {
-                if crate::bootstrap::resolver::write_bootstrap_peer(
+            if ui.button("Add Peer").clicked()
+                && !self.new_peer_id.is_empty()
+                && !self.new_peer_addr.is_empty()
+                && crate::bootstrap::resolver::write_bootstrap_peer(
                     &api.data_dir,
                     &self.new_peer_id,
                     &self.new_peer_addr,
                     &self.new_peer_note,
-                ).is_ok() {
-                    self.new_peer_id.clear();
-                    self.new_peer_addr.clear();
-                    self.new_peer_note.clear();
-                }
+                )
+                .is_ok()
+            {
+                self.new_peer_id.clear();
+                self.new_peer_addr.clear();
+                self.new_peer_note.clear();
             }
         });
 

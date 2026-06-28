@@ -21,17 +21,13 @@ pub mod schema {
 /// How the content was scraped
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum ScrapeSource {
+    #[default]
     Url,
     Feed,
     Api,
     Keyword,
-}
-
-impl Default for ScrapeSource {
-    fn default() -> Self {
-        Self::Url
-    }
 }
 
 impl ScrapeSource {
@@ -61,20 +57,15 @@ impl std::fmt::Display for ScrapeSource {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RefreshPolicy {
     #[serde(rename = "once")]
+    #[default]
     Once,
     #[serde(rename = "interval")]
     Interval,
     #[serde(rename = "on-change", alias = "onchange")]
     OnChange,
-}
-
-impl Default for RefreshPolicy {
-    fn default() -> Self {
-        Self::Once
-    }
 }
 
 impl RefreshPolicy {
@@ -161,10 +152,7 @@ impl ContentRecord {
     pub fn validate_size(&self) -> Result<(), String> {
         let json = serde_json::to_vec(self).map_err(|e| format!("serialization error: {}", e))?;
         if json.len() > MAX_RECORD_SIZE {
-            return Err(format!(
-                "record exceeds 1 MB limit ({} bytes)",
-                json.len()
-            ));
+            return Err(format!("record exceeds 1 MB limit ({} bytes)", json.len()));
         }
         Ok(())
     }

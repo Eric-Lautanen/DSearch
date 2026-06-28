@@ -1,15 +1,13 @@
-pub mod records;
-pub mod index;
 pub mod expiry;
-pub mod quota;
+pub mod index;
 pub mod migrations;
-pub mod tier2_limiter;
-
+pub mod quota;
+pub mod records;
+use crate::config::StorageConfig;
+use crate::model::{Announcement, ContentRecord};
 use redb::{Database, TableDefinition};
 use std::path::Path;
 use std::sync::Arc;
-use crate::config::StorageConfig;
-use crate::model::{ContentRecord, Announcement};
 
 /// All table definitions used by the store.
 const RECORDS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("records");
@@ -25,8 +23,7 @@ const INVERTED_INDEX_TABLE: TableDefinition<&str, &str> = TableDefinition::new("
 /// Open the store database, creating it if needed.
 /// Runs schema version check and creates all tables.
 pub fn open_store(data_dir: &Path) -> Result<Arc<Database>, String> {
-    std::fs::create_dir_all(data_dir)
-        .map_err(|e| format!("create data dir: {}", e))?;
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("create data dir: {}", e))?;
 
     let db_path = data_dir.join("store.redb");
     let db = Database::builder()
@@ -34,17 +31,39 @@ pub fn open_store(data_dir: &Path) -> Result<Arc<Database>, String> {
         .map_err(|e| format!("open store.redb: {}", e))?;
 
     // Create all tables
-    let write_tx = db.begin_write().map_err(|e| format!("init write tx: {}", e))?;
-    write_tx.open_table(RECORDS_TABLE).map_err(|e| format!("create records table: {}", e))?;
-    write_tx.open_table(ANNOUNCEMENTS_TABLE).map_err(|e| format!("create announcements table: {}", e))?;
-    write_tx.open_table(SOURCE_INDEX_TABLE).map_err(|e| format!("create source_index table: {}", e))?;
-    write_tx.open_table(PINS_TABLE).map_err(|e| format!("create pins table: {}", e))?;
-    write_tx.open_table(ROUTING_TABLE).map_err(|e| format!("create routing table: {}", e))?;
-    write_tx.open_table(PEERS_TABLE).map_err(|e| format!("create peers table: {}", e))?;
-    write_tx.open_table(BANNED_PEERS_TABLE).map_err(|e| format!("create banned_peers table: {}", e))?;
-    write_tx.open_table(META_TABLE).map_err(|e| format!("create meta table: {}", e))?;
-    write_tx.open_table(INVERTED_INDEX_TABLE).map_err(|e| format!("create inverted_index table: {}", e))?;
-    write_tx.commit().map_err(|e| format!("init commit: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("init write tx: {}", e))?;
+    write_tx
+        .open_table(RECORDS_TABLE)
+        .map_err(|e| format!("create records table: {}", e))?;
+    write_tx
+        .open_table(ANNOUNCEMENTS_TABLE)
+        .map_err(|e| format!("create announcements table: {}", e))?;
+    write_tx
+        .open_table(SOURCE_INDEX_TABLE)
+        .map_err(|e| format!("create source_index table: {}", e))?;
+    write_tx
+        .open_table(PINS_TABLE)
+        .map_err(|e| format!("create pins table: {}", e))?;
+    write_tx
+        .open_table(ROUTING_TABLE)
+        .map_err(|e| format!("create routing table: {}", e))?;
+    write_tx
+        .open_table(PEERS_TABLE)
+        .map_err(|e| format!("create peers table: {}", e))?;
+    write_tx
+        .open_table(BANNED_PEERS_TABLE)
+        .map_err(|e| format!("create banned_peers table: {}", e))?;
+    write_tx
+        .open_table(META_TABLE)
+        .map_err(|e| format!("create meta table: {}", e))?;
+    write_tx
+        .open_table(INVERTED_INDEX_TABLE)
+        .map_err(|e| format!("create inverted_index table: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("init commit: {}", e))?;
 
     // Check schema version and run migrations
     migrations::check_and_migrate(&db)?;
@@ -91,7 +110,11 @@ impl Store {
     }
 
     /// List records, optionally filtered by schema.
-    pub fn list_records(&self, schema: Option<&str>, limit: usize) -> Result<Vec<ContentRecord>, String> {
+    pub fn list_records(
+        &self,
+        schema: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<ContentRecord>, String> {
         records::list_records(&self.db, schema, limit)
     }
 
@@ -128,12 +151,8 @@ impl Store {
         records::insert_announcement(&self.db, ann)
     }
 
-    /// List announcements.
-    pub fn list_announcements(&self, record_id: Option<&str>) -> Result<Vec<Announcement>, String> {
-        records::list_announcements(&self.db, record_id)
-    }
-
-    /// Search the inverted index.
+    /// Search the inverted index (only used in tests).
+    #[cfg(test)]
     pub fn search_index(
         &self,
         schema: &str,
@@ -171,7 +190,11 @@ impl Store {
         matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Apply limit
-        Ok(matched.into_iter().take(effective_limit).map(|(r, _)| r).collect())
+        Ok(matched
+            .into_iter()
+            .take(effective_limit)
+            .map(|(r, _)| r)
+            .collect())
     }
 
     /// Get record count.
@@ -190,20 +213,18 @@ impl Store {
     }
 
     /// Start the background expiry sweeper.
-    pub fn start_expiry_sweeper(&self, interval: std::time::Duration) -> tokio::task::JoinHandle<()> {
+    pub fn start_expiry_sweeper(
+        &self,
+        interval: std::time::Duration,
+    ) -> tokio::task::JoinHandle<()> {
         expiry::start_expiry_sweeper(self.db.clone(), interval)
-    }
-
-    /// Get the underlying database reference.
-    pub fn db(&self) -> &Arc<Database> {
-        &self.db
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ScrapeSource, RefreshPolicy, schema};
+    use crate::model::{schema, RefreshPolicy, ScrapeSource};
     use tempfile::TempDir;
 
     fn open_test_store() -> (TempDir, Store) {
@@ -285,7 +306,9 @@ mod tests {
         let r1 = make_record("r1", "sh1", 1000, 2000);
         store.insert_record(&r1).unwrap();
 
-        let results = store.search_index("wiki/article", Some("category"), Some("networking")).unwrap();
+        let results = store
+            .search_index("wiki/article", Some("category"), Some("networking"))
+            .unwrap();
         assert!(results.contains(&"r1".to_string()));
     }
 

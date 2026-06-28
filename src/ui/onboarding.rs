@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use eframe::egui;
+use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OnboardingStep {
     Welcome,
@@ -84,7 +84,9 @@ impl OnboardingState {
                 let is_current = i == current_idx;
                 let is_past = i < current_idx;
                 let text = if is_current {
-                    egui::RichText::new(*label).strong().color(egui::Color32::from_rgb(0x64, 0xB5, 0xF6))
+                    egui::RichText::new(*label)
+                        .strong()
+                        .color(egui::Color32::from_rgb(0x64, 0xB5, 0xF6))
                 } else if is_past {
                     egui::RichText::new(*label).color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50))
                 } else {
@@ -118,17 +120,24 @@ impl OnboardingState {
                 }
             });
             ui.add_space(4.0);
-            ui.label(egui::RichText::new(
-                "This is where your identity, config, and stored records will live."
-            ).small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(
+                    "This is where your identity, config, and stored records will live.",
+                )
+                .small()
+                .color(egui::Color32::GRAY),
+            );
         });
 
         ui.add_space(24.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-            if ui.button("Continue →").clicked() {
-                self.step = OnboardingStep::GenerateIdentity;
-            }
-        });
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::BOTTOM),
+            |ui: &mut egui::Ui| {
+                if ui.button("Continue →").clicked() {
+                    self.step = OnboardingStep::GenerateIdentity;
+                }
+            },
+        );
     }
 
     fn step_identity(&mut self, ui: &mut egui::Ui) {
@@ -141,24 +150,37 @@ impl OnboardingState {
             ui.label("is used to sign content records and announcements.");
             ui.add_space(16.0);
 
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-                if ui.button("Generate Identity →").clicked() {
-                    if let Ok((signing_key, node_id, cert_der, key_der)) =
-                        crate::proto::cert::generate_identity()
-                    {
-                        std::fs::create_dir_all(&self.data_dir).ok();
-                        if crate::proto::cert::save_identity(&self.data_dir, &signing_key, &cert_der, &key_der).is_ok() {
-                            self.node_id = node_id;
-                            self.identity_generated = true;
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::BOTTOM),
+                |ui: &mut egui::Ui| {
+                    if ui.button("Generate Identity →").clicked() {
+                        if let Ok((signing_key, node_id, cert_der, key_der)) =
+                            crate::proto::cert::generate_identity()
+                        {
+                            std::fs::create_dir_all(&self.data_dir).ok();
+                            if crate::proto::cert::save_identity(
+                                &self.data_dir,
+                                &signing_key,
+                                &cert_der,
+                                &key_der,
+                            )
+                            .is_ok()
+                            {
+                                self.node_id = node_id;
+                                self.identity_generated = true;
+                            }
                         }
                     }
-                }
-                if ui.button("← Back").clicked() {
-                    self.step = OnboardingStep::Welcome;
-                }
-            });
+                    if ui.button("← Back").clicked() {
+                        self.step = OnboardingStep::Welcome;
+                    }
+                },
+            );
         } else {
-            ui.label(egui::RichText::new("✓ Identity generated!").color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)));
+            ui.label(
+                egui::RichText::new("✓ Identity generated!")
+                    .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
+            );
             ui.add_space(8.0);
             ui.group(|ui: &mut egui::Ui| {
                 ui.label(egui::RichText::new("Node ID:").strong());
@@ -172,21 +194,28 @@ impl OnboardingState {
                 });
             });
             ui.add_space(8.0);
-            ui.label(egui::RichText::new(format!(
-                "Identity saved to: {}/identity.key\nCert saved to: {}/node.crt",
-                self.data_dir.display(),
-                self.data_dir.display()
-            )).small().color(egui::Color32::GRAY));
+            ui.label(
+                egui::RichText::new(format!(
+                    "Identity saved to: {}/identity.key\nCert saved to: {}/node.crt",
+                    self.data_dir.display(),
+                    self.data_dir.display()
+                ))
+                .small()
+                .color(egui::Color32::GRAY),
+            );
 
             ui.add_space(24.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-                if ui.button("Continue →").clicked() {
-                    self.step = OnboardingStep::ChooseRole;
-                }
-                if ui.button("← Back").clicked() {
-                    self.step = OnboardingStep::Welcome;
-                }
-            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::BOTTOM),
+                |ui: &mut egui::Ui| {
+                    if ui.button("Continue →").clicked() {
+                        self.step = OnboardingStep::ChooseRole;
+                    }
+                    if ui.button("← Back").clicked() {
+                        self.step = OnboardingStep::Welcome;
+                    }
+                },
+            );
         }
     }
 
@@ -212,7 +241,11 @@ impl OnboardingState {
             }
             if is_selected {
                 ui.add_space(2.0);
-                ui.label(egui::RichText::new(*desc).small().color(egui::Color32::LIGHT_GRAY));
+                ui.label(
+                    egui::RichText::new(*desc)
+                        .small()
+                        .color(egui::Color32::LIGHT_GRAY),
+                );
                 ui.add_space(4.0);
             }
         }
@@ -220,11 +253,17 @@ impl OnboardingState {
         ui.add_space(12.0);
         if let Some(reachable) = self.autonat_result {
             if reachable {
-                ui.label(egui::RichText::new("✓ Your node appears publicly reachable — Full node is possible")
-                    .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)));
+                ui.label(
+                    egui::RichText::new(
+                        "✓ Your node appears publicly reachable — Full node is possible",
+                    )
+                    .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
+                );
             } else {
-                ui.label(egui::RichText::new("✗ Your node is behind NAT — Light node recommended")
-                    .color(egui::Color32::from_rgb(0xFF, 0x98, 0x00)));
+                ui.label(
+                    egui::RichText::new("✗ Your node is behind NAT — Light node recommended")
+                        .color(egui::Color32::from_rgb(0xFF, 0x98, 0x00)),
+                );
             }
         } else {
             ui.horizontal(|ui: &mut egui::Ui| {
@@ -237,15 +276,18 @@ impl OnboardingState {
         }
 
         ui.add_space(24.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-            if ui.button("Continue →").clicked() {
-                self.write_config_with_role();
-                self.step = OnboardingStep::ConnectBootstrap;
-            }
-            if ui.button("← Back").clicked() {
-                self.step = OnboardingStep::GenerateIdentity;
-            }
-        });
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::BOTTOM),
+            |ui: &mut egui::Ui| {
+                if ui.button("Continue →").clicked() {
+                    self.write_config_with_role();
+                    self.step = OnboardingStep::ConnectBootstrap;
+                }
+                if ui.button("← Back").clicked() {
+                    self.step = OnboardingStep::GenerateIdentity;
+                }
+            },
+        );
     }
 
     fn step_bootstrap(&mut self, ui: &mut egui::Ui) {
@@ -260,46 +302,65 @@ impl OnboardingState {
 
             let peers = crate::bootstrap::resolver::resolve_bootstrap_peers(&self.data_dir);
             if !peers.is_empty() {
-                ui.label(egui::RichText::new(format!("Found {} bootstrap peer(s)", peers.len())).small());
+                ui.label(
+                    egui::RichText::new(format!("Found {} bootstrap peer(s)", peers.len())).small(),
+                );
             } else {
-                ui.label(egui::RichText::new("No bootstrap peers found.").color(egui::Color32::from_rgb(0xFF, 0x98, 0x00)));
+                ui.label(
+                    egui::RichText::new("No bootstrap peers found.")
+                        .color(egui::Color32::from_rgb(0xFF, 0x98, 0x00)),
+                );
             }
 
             ui.add_space(12.0);
             ui.group(|ui: &mut egui::Ui| {
                 ui.label(egui::RichText::new("Add a peer manually").strong());
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new("If automatic discovery fails, you can add a peer address here.")
-                    .small().color(egui::Color32::GRAY));
+                ui.label(
+                    egui::RichText::new(
+                        "If automatic discovery fails, you can add a peer address here.",
+                    )
+                    .small()
+                    .color(egui::Color32::GRAY),
+                );
             });
 
             ui.add_space(24.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-                if ui.button("Skip →").clicked() {
-                    self.write_bootstrap_defaults();
-                    self.bootstrap_connected = true;
-                    self.step = OnboardingStep::Done;
-                }
-                if ui.button("Retry").clicked() {
-                    self.bootstrap_connected = true;
-                    self.write_bootstrap_defaults();
-                    self.step = OnboardingStep::Done;
-                }
-                if ui.button("← Back").clicked() {
-                    self.step = OnboardingStep::ChooseRole;
-                }
-            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::BOTTOM),
+                |ui: &mut egui::Ui| {
+                    if ui.button("Skip →").clicked() {
+                        self.write_bootstrap_defaults();
+                        self.bootstrap_connected = true;
+                        self.step = OnboardingStep::Done;
+                    }
+                    if ui.button("Retry").clicked() {
+                        self.bootstrap_connected = true;
+                        self.write_bootstrap_defaults();
+                        self.step = OnboardingStep::Done;
+                    }
+                    if ui.button("← Back").clicked() {
+                        self.step = OnboardingStep::ChooseRole;
+                    }
+                },
+            );
         } else {
-            ui.label(egui::RichText::new(format!(
-                "Connected to {} peer(s). Network ready.",
-                self.bootstrap_peer_count
-            )).color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)));
+            ui.label(
+                egui::RichText::new(format!(
+                    "Connected to {} peer(s). Network ready.",
+                    self.bootstrap_peer_count
+                ))
+                .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
+            );
             ui.add_space(24.0);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-                if ui.button("Start Searching →").clicked() {
-                    self.step = OnboardingStep::Done;
-                }
-            });
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::BOTTOM),
+                |ui: &mut egui::Ui| {
+                    if ui.button("Start Searching →").clicked() {
+                        self.step = OnboardingStep::Done;
+                    }
+                },
+            );
         }
     }
 
@@ -313,17 +374,23 @@ impl OnboardingState {
         ui.group(|ui: &mut egui::Ui| {
             ui.label(egui::RichText::new("Summary").strong());
             ui.add_space(4.0);
-            ui.label(format!("Node ID: {}…", &self.node_id[..16.min(self.node_id.len())]));
+            ui.label(format!(
+                "Node ID: {}…",
+                &self.node_id[..16.min(self.node_id.len())]
+            ));
             ui.label(format!("Role: {}", self.selected_role));
             ui.label(format!("Data dir: {}", self.data_dir.display()));
         });
 
         ui.add_space(24.0);
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::BOTTOM), |ui: &mut egui::Ui| {
-            if ui.button("Start Searching →").clicked() {
-                // is_complete() will return true
-            }
-        });
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::BOTTOM),
+            |ui: &mut egui::Ui| {
+                if ui.button("Start Searching →").clicked() {
+                    // is_complete() will return true
+                }
+            },
+        );
     }
 
     fn write_config_with_role(&self) {

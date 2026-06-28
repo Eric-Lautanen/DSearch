@@ -1,13 +1,13 @@
-use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, warn, error};
-use crate::config::DsearchConfig;
-use crate::storage::Store;
+use crate::api::handlers;
 use crate::api::request;
 use crate::api::response::HttpResponse;
-use crate::api::handlers;
+use crate::config::DsearchConfig;
+use crate::storage::Store;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tracing::{error, info, warn};
 
 /// Start the local HTTP API server.
 /// Tries ports from `start_port` up to `start_port + 10`.
@@ -39,7 +39,10 @@ pub async fn start_api_server(
     }
 
     let listener = listener.ok_or_else(|| {
-        format!("No available port in range {}-{} for local API", start_port, max_port)
+        format!(
+            "No available port in range {}-{} for local API",
+            start_port, max_port
+        )
     })?;
     let actual_port = bound_port.unwrap();
 
@@ -69,7 +72,9 @@ async fn api_server_loop(
                 let config = config.clone();
                 let store = store.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, data_dir, node_id, config, store).await {
+                    if let Err(e) =
+                        handle_connection(stream, data_dir, node_id, config, store).await
+                    {
                         warn!("API connection error: {}", e);
                     }
                 });
@@ -89,7 +94,10 @@ async fn handle_connection(
     store: Arc<Store>,
 ) -> Result<(), String> {
     let mut buf = vec![0u8; 65536];
-    let n = stream.read(&mut buf).await.map_err(|e| format!("read: {}", e))?;
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("read: {}", e))?;
     if n == 0 {
         return Ok(());
     }
@@ -100,7 +108,10 @@ async fn handle_connection(
     let resp: HttpResponse = handlers::route(req, &data_dir, &node_id, &config, &store).await;
 
     let resp_bytes = resp.to_bytes();
-    stream.write_all(&resp_bytes).await.map_err(|e| format!("write: {}", e))?;
+    stream
+        .write_all(&resp_bytes)
+        .await
+        .map_err(|e| format!("write: {}", e))?;
     stream.flush().await.map_err(|e| format!("flush: {}", e))?;
 
     Ok(())

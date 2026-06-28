@@ -1,6 +1,8 @@
-use eframe;
-use tray_icon::{TrayIconBuilder, TrayIcon, menu::{Menu, MenuItem, PredefinedMenuItem}, Icon};
 use tray_icon::menu::MenuEvent;
+use tray_icon::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    Icon, TrayIcon, TrayIconBuilder,
+};
 
 /// State for the system tray icon.
 #[derive(Default)]
@@ -58,24 +60,6 @@ impl TrayState {
             }
         }
     }
-
-    /// Update the status dot color on the tray icon tooltip.
-    pub fn set_status(&mut self, connected: bool) {
-        if let Some(ref tray) = self.tray_icon {
-            let status = if self.paused {
-                "Paused"
-            } else if connected {
-                "Connected"
-            } else {
-                "Disconnected"
-            };
-            tray.set_tooltip(Some(format!("DSearch — {}", status))).ok();
-        }
-    }
-
-    pub fn is_paused(&self) -> bool {
-        self.paused
-    }
 }
 
 fn build_tray_menu(paused: bool) -> Menu {
@@ -99,10 +83,7 @@ fn build_tray_menu(paused: bool) -> Menu {
 /// Load the tray icon from the assets directory.
 /// Tries PNG files first, falls back to a generated green dot.
 fn load_tray_icon() -> Option<Icon> {
-    let png_paths = [
-        "assets/linux/icon-32.png",
-        "assets/linux/icon-16.png",
-    ];
+    let png_paths = ["assets/linux/icon-32.png", "assets/linux/icon-16.png"];
 
     for path in &png_paths {
         let path = std::path::Path::new(path);

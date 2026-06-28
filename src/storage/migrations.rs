@@ -11,10 +11,13 @@ const SCHEMA_VERSION_KEY: &str = "schema_version";
 /// Returns an error if the database is from a future version.
 pub fn check_and_migrate(db: &Database) -> Result<(), String> {
     let version = {
-        let read_tx = db.begin_read().map_err(|e| format!("migration read tx: {}", e))?;
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("migration read tx: {}", e))?;
         let table = read_tx.open_table(META_TABLE);
         match table {
-            Ok(t) => t.get(SCHEMA_VERSION_KEY)
+            Ok(t) => t
+                .get(SCHEMA_VERSION_KEY)
                 .map_err(|e| format!("read schema_version: {}", e))?
                 .map(|v| v.value())
                 .unwrap_or(0),
@@ -36,18 +39,24 @@ pub fn check_and_migrate(db: &Database) -> Result<(), String> {
 
     // Run migrations from version -> CURRENT_SCHEMA_VERSION
     let migrator = Migrator::new(version);
-    let write_tx = db.begin_write().map_err(|e| format!("migration write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("migration write tx: {}", e))?;
     migrator.run(db, &write_tx)?;
 
     // Write the new version
     {
-        let mut meta_table = write_tx.open_table(META_TABLE)
+        let mut meta_table = write_tx
+            .open_table(META_TABLE)
             .map_err(|e| format!("open meta table for migration: {}", e))?;
-        meta_table.insert(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION)
+        meta_table
+            .insert(SCHEMA_VERSION_KEY, CURRENT_SCHEMA_VERSION)
             .map_err(|e| format!("write schema_version: {}", e))?;
     }
 
-    write_tx.commit().map_err(|e| format!("migration commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("migration commit: {}", e))?;
     Ok(())
 }
 
@@ -75,7 +84,8 @@ pub fn get_schema_version(db: &Database) -> Result<u64, String> {
     let read_tx = db.begin_read().map_err(|e| format!("read tx: {}", e))?;
     let table = read_tx.open_table(META_TABLE);
     match table {
-        Ok(t) => Ok(t.get(SCHEMA_VERSION_KEY)
+        Ok(t) => Ok(t
+            .get(SCHEMA_VERSION_KEY)
             .map_err(|e| format!("read schema_version: {}", e))?
             .map(|v| v.value())
             .unwrap_or(0)),
@@ -90,8 +100,7 @@ pub fn check_and_migrate_on_path(data_dir: &std::path::Path) -> Result<u64, Stri
     if !db_path.exists() {
         return Ok(0);
     }
-    let db = Database::open(&db_path)
-        .map_err(|e| format!("open store.redb: {}", e))?;
+    let db = Database::open(&db_path).map_err(|e| format!("open store.redb: {}", e))?;
     check_and_migrate(&db)?;
     get_schema_version(&db)
 }
@@ -103,9 +112,7 @@ mod tests {
 
     fn open_db(dir: &TempDir) -> Database {
         let path = dir.path().join("store.redb");
-        Database::builder()
-            .create(&path)
-            .expect("create db")
+        Database::builder().create(&path).expect("create db")
     }
 
     #[test]

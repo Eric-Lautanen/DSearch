@@ -48,9 +48,16 @@ impl NodeRole {
 
     pub fn all() -> &'static [NodeRole] {
         &[
-            Self::Light, Self::Full, Self::Bootstrap, Self::Relay,
-            Self::Stun, Self::Scraper, Self::Archive, Self::Indexer,
-            Self::Gateway, Self::Observer,
+            Self::Light,
+            Self::Full,
+            Self::Bootstrap,
+            Self::Relay,
+            Self::Stun,
+            Self::Scraper,
+            Self::Archive,
+            Self::Indexer,
+            Self::Gateway,
+            Self::Observer,
         ]
     }
 }

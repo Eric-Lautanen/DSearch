@@ -3,14 +3,12 @@ use std::path::Path;
 
 use crate::model::ScrapeJob;
 
-pub mod migrations;
-
 /// Current config schema version.
 /// Incremented when config.toml's structure changes.
 /// NOT the same as the wire protocol version.
 pub const CURRENT_CONFIG_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DsearchConfig {
     #[serde(default)]
     pub node: NodeConfig,
@@ -28,21 +26,6 @@ pub struct DsearchConfig {
     pub log: LogConfig,
     #[serde(default)]
     pub bootstrap: BootstrapConfig,
-}
-
-impl Default for DsearchConfig {
-    fn default() -> Self {
-        Self {
-            node: NodeConfig::default(),
-            api: ApiConfig::default(),
-            gateway: GatewayConfig::default(),
-            storage: StorageConfig::default(),
-            relay: RelayConfig::default(),
-            scraper: ScraperConfig::default(),
-            log: LogConfig::default(),
-            bootstrap: BootstrapConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,7 +65,9 @@ pub struct ApiConfig {
 
 impl Default for ApiConfig {
     fn default() -> Self {
-        Self { port: default_api_port() }
+        Self {
+            port: default_api_port(),
+        }
     }
 }
 
@@ -137,7 +122,9 @@ pub struct RelayConfig {
 
 impl Default for RelayConfig {
     fn default() -> Self {
-        Self { bandwidth_limit_mbps: default_bandwidth_limit() }
+        Self {
+            bandwidth_limit_mbps: default_bandwidth_limit(),
+        }
     }
 }
 
@@ -203,24 +190,60 @@ impl Default for BootstrapConfig {
 }
 
 // Default value functions
-fn default_role() -> String { "light".to_string() }
-fn default_max_connections() -> u32 { 200 }
-fn default_max_concurrent_queries() -> u32 { 50 }
-fn default_min_protocol_version() -> u8 { 1 }
-fn default_api_port() -> u16 { 7743 }
-fn default_gateway_bind() -> String { "0.0.0.0:7744".to_string() }
-fn default_rate_limit() -> u32 { 60 }
-fn default_quota_action() -> String { "evict_oldest".to_string() }
-fn default_tier2_max_mb() -> u32 { 512 }
-fn default_bandwidth_limit() -> u32 { 100 }
-fn default_interval_secs() -> u64 { 3600 }
-fn default_lifecycle_str() -> String { "ephemeral".to_string() }
-fn default_log_level() -> String { "info".to_string() }
-fn default_log_output() -> String { "stderr".to_string() }
-fn default_log_file() -> String { "{data_dir}/dsearch.log".to_string() }
-fn default_max_size_mb() -> u32 { 50 }
-fn default_rotate_count() -> u32 { 3 }
-fn default_true() -> bool { true }
+fn default_role() -> String {
+    "light".to_string()
+}
+fn default_max_connections() -> u32 {
+    200
+}
+fn default_max_concurrent_queries() -> u32 {
+    50
+}
+fn default_min_protocol_version() -> u8 {
+    1
+}
+fn default_api_port() -> u16 {
+    7743
+}
+fn default_gateway_bind() -> String {
+    "0.0.0.0:7744".to_string()
+}
+fn default_rate_limit() -> u32 {
+    60
+}
+fn default_quota_action() -> String {
+    "evict_oldest".to_string()
+}
+fn default_tier2_max_mb() -> u32 {
+    512
+}
+fn default_bandwidth_limit() -> u32 {
+    100
+}
+fn default_interval_secs() -> u64 {
+    3600
+}
+fn default_lifecycle_str() -> String {
+    "ephemeral".to_string()
+}
+fn default_log_level() -> String {
+    "info".to_string()
+}
+fn default_log_output() -> String {
+    "stderr".to_string()
+}
+fn default_log_file() -> String {
+    "{data_dir}/dsearch.log".to_string()
+}
+fn default_max_size_mb() -> u32 {
+    50
+}
+fn default_rotate_count() -> u32 {
+    3
+}
+fn default_true() -> bool {
+    true
+}
 
 /// Load config from data_dir/config.toml, or return defaults if missing.
 pub fn load_config(data_dir: &Path) -> Result<DsearchConfig, String> {
@@ -228,8 +251,8 @@ pub fn load_config(data_dir: &Path) -> Result<DsearchConfig, String> {
     if config_path.exists() {
         let contents = std::fs::read_to_string(&config_path)
             .map_err(|e| format!("Failed to read config.toml: {}", e))?;
-        let config: DsearchConfig = toml::from_str(&contents)
-            .map_err(|e| format!("Failed to parse config.toml: {}", e))?;
+        let config: DsearchConfig =
+            toml::from_str(&contents).map_err(|e| format!("Failed to parse config.toml: {}", e))?;
 
         // Check for future config_version
         if let Some(version) = extract_config_version(&contents) {
@@ -274,8 +297,8 @@ fn extract_config_version(toml_str: &str) -> Option<u32> {
 /// Save config to data_dir/config.toml.
 pub fn save_config(data_dir: &Path, config: &DsearchConfig) -> Result<(), String> {
     let config_path = data_dir.join("config.toml");
-    let toml_str = toml::to_string_pretty(config)
-        .map_err(|e| format!("Failed to serialize config: {}", e))?;
+    let toml_str =
+        toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
     std::fs::write(&config_path, toml_str)
         .map_err(|e| format!("Failed to write config.toml: {}", e))?;
     Ok(())
@@ -289,65 +312,79 @@ pub fn set_config_value(config: &mut DsearchConfig, key: &str, value: &str) -> R
             config.node.role = value.to_string();
         }
         "node.max_connections" => {
-            config.node.max_connections = value.parse()
+            config.node.max_connections = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "node.max_concurrent_queries" => {
-            config.node.max_concurrent_queries = value.parse()
+            config.node.max_concurrent_queries = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "node.min_protocol_version" => {
-            config.node.min_protocol_version = value.parse()
+            config.node.min_protocol_version = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u8", key))?;
         }
         "node.ipv4" => {
-            config.node.ipv4 = value.parse()
+            config.node.ipv4 = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected bool", key))?;
         }
         "node.ipv6" => {
-            config.node.ipv6 = value.parse()
+            config.node.ipv6 = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected bool", key))?;
         }
         "api.port" => {
-            config.api.port = value.parse()
+            config.api.port = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u16", key))?;
         }
         "gateway.enabled" => {
-            config.gateway.enabled = value.parse()
+            config.gateway.enabled = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected bool", key))?;
         }
         "gateway.bind" => {
             config.gateway.bind = value.to_string();
         }
         "gateway.rate_limit_per_min" => {
-            config.gateway.rate_limit_per_min = value.parse()
+            config.gateway.rate_limit_per_min = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "gateway.require_api_key" => {
-            config.gateway.require_api_key = value.parse()
+            config.gateway.require_api_key = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected bool", key))?;
         }
         "storage.quota_mb" => {
-            config.storage.quota_mb = value.parse()
+            config.storage.quota_mb = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "storage.quota_action" => {
             config.storage.quota_action = value.to_string();
         }
         "storage.tier2_max_mb" => {
-            config.storage.tier2_max_mb = value.parse()
+            config.storage.tier2_max_mb = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "relay.bandwidth_limit_mbps" => {
-            config.relay.bandwidth_limit_mbps = value.parse()
+            config.relay.bandwidth_limit_mbps = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "scraper.default_interval_secs" => {
-            config.scraper.default_interval_secs = value.parse()
+            config.scraper.default_interval_secs = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u64", key))?;
         }
         "scraper.default_replicate" => {
-            config.scraper.default_replicate = value.parse()
+            config.scraper.default_replicate = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "scraper.default_lifecycle" => {
@@ -363,15 +400,18 @@ pub fn set_config_value(config: &mut DsearchConfig, key: &str, value: &str) -> R
             config.log.file = value.to_string();
         }
         "log.max_size_mb" => {
-            config.log.max_size_mb = value.parse()
+            config.log.max_size_mb = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "log.rotate_count" => {
-            config.log.rotate_count = value.parse()
+            config.log.rotate_count = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected u32", key))?;
         }
         "bootstrap.use_defaults" => {
-            config.bootstrap.use_defaults = value.parse()
+            config.bootstrap.use_defaults = value
+                .parse()
                 .map_err(|_| format!("Invalid value for {}: expected bool", key))?;
         }
         _ => return Err(format!("Unknown config key: {}", key)),
@@ -383,14 +423,17 @@ pub fn set_config_value(config: &mut DsearchConfig, key: &str, value: &str) -> R
 pub fn default_config_toml() -> String {
     let config = DsearchConfig::default();
     let mut toml_str = toml::to_string_pretty(&config).unwrap_or_default();
-    toml_str.push_str(&format!("\n[meta]\nconfig_version = {}\n", CURRENT_CONFIG_VERSION));
+    toml_str.push_str(&format!(
+        "\n[meta]\nconfig_version = {}\n",
+        CURRENT_CONFIG_VERSION
+    ));
     toml_str
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ScrapeSource, RefreshPolicy, Lifecycle};
+    use crate::model::{Lifecycle, RefreshPolicy, ScrapeSource};
 
     #[test]
     fn default_config_roundtrip() {

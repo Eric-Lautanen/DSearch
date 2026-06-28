@@ -1,14 +1,14 @@
+use super::gateway_keys::GatewayKeyStore;
+use super::request::HttpRequest;
+use super::response::HttpResponse;
+use crate::config::DsearchConfig;
+use crate::storage::Store;
 /// Gateway API — optional public read-only surface with per-key rate limiting.
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::TcpListener;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, warn, error};
-use crate::config::DsearchConfig;
-use crate::storage::Store;
-use super::request::HttpRequest;
-use super::response::HttpResponse;
-use super::gateway_keys::GatewayKeyStore;
+use tokio::net::TcpListener;
+use tracing::{error, info, warn};
 
 /// Start the gateway API server (if enabled in config).
 pub async fn start_gateway_server(
@@ -22,10 +22,15 @@ pub async fn start_gateway_server(
         return Ok(());
     }
 
-    let bind_addr: SocketAddr = config.gateway.bind.parse()
-        .map_err(|e| format!("invalid gateway bind address '{}': {}", config.gateway.bind, e))?;
+    let bind_addr: SocketAddr = config.gateway.bind.parse().map_err(|e| {
+        format!(
+            "invalid gateway bind address '{}': {}",
+            config.gateway.bind, e
+        )
+    })?;
 
-    let listener = TcpListener::bind(bind_addr).await
+    let listener = TcpListener::bind(bind_addr)
+        .await
         .map_err(|e| format!("gateway bind {}: {}", bind_addr, e))?;
     info!("Gateway API bound to {}", bind_addr);
 
@@ -33,7 +38,15 @@ pub async fn start_gateway_server(
     let require_key = config.gateway.require_api_key;
     let key_store = Arc::new(GatewayKeyStore::new(data_dir.clone()));
 
-    tokio::spawn(gateway_server_loop(listener, data_dir, node_id, store, key_store, rate_limit, require_key));
+    tokio::spawn(gateway_server_loop(
+        listener,
+        data_dir,
+        node_id,
+        store,
+        key_store,
+        rate_limit,
+        require_key,
+    ));
 
     Ok(())
 }
@@ -56,8 +69,16 @@ async fn gateway_server_loop(
                 let key_store = key_store.clone();
                 tokio::spawn(async move {
                     if let Err(e) = handle_gateway_connection(
-                        stream, &data_dir, &node_id, &store, &key_store, rate_limit, require_key,
-                    ).await {
+                        stream,
+                        &data_dir,
+                        &node_id,
+                        &store,
+                        &key_store,
+                        rate_limit,
+                        require_key,
+                    )
+                    .await
+                    {
                         warn!("Gateway connection error: {}", e);
                     }
                 });
@@ -79,7 +100,10 @@ async fn handle_gateway_connection(
     require_key: bool,
 ) -> Result<(), String> {
     let mut buf = vec![0u8; 65536];
-    let n = stream.read(&mut buf).await.map_err(|e| format!("read: {}", e))?;
+    let n = stream
+        .read(&mut buf)
+        .await
+        .map_err(|e| format!("read: {}", e))?;
     if n == 0 {
         return Ok(());
     }
@@ -99,26 +123,47 @@ async fn handle_gateway_connection(
     };
 
     if !key_store.check_rate_limit(&identifier, rate_limit) {
-        let resp = HttpResponse::new(429, "Too Many Requests", "{\"error\":\"rate limit exceeded\",\"code\":429}");
+        let resp = HttpResponse::new(
+            429,
+            "Too Many Requests",
+            "{\"error\":\"rate limit exceeded\",\"code\":429}",
+        );
         let bytes = resp.to_bytes();
-        stream.write_all(&bytes).await.map_err(|e| format!("write: {}", e))?;
+        stream
+            .write_all(&bytes)
+            .await
+            .map_err(|e| format!("write: {}", e))?;
         return Ok(());
     }
 
     // If API key is required and none provided, reject
     if require_key && api_key.is_none() {
-        let resp = HttpResponse::new(401, "Unauthorized", "{\"error\":\"API key required\",\"code\":401}");
+        let resp = HttpResponse::new(
+            401,
+            "Unauthorized",
+            "{\"error\":\"API key required\",\"code\":401}",
+        );
         let bytes = resp.to_bytes();
-        stream.write_all(&bytes).await.map_err(|e| format!("write: {}", e))?;
+        stream
+            .write_all(&bytes)
+            .await
+            .map_err(|e| format!("write: {}", e))?;
         return Ok(());
     }
 
     // If API key is provided, validate it
     if let Some(ref key) = api_key {
         if !key_store.validate_key(key) {
-            let resp = HttpResponse::new(401, "Unauthorized", "{\"error\":\"invalid API key\",\"code\":401}");
+            let resp = HttpResponse::new(
+                401,
+                "Unauthorized",
+                "{\"error\":\"invalid API key\",\"code\":401}",
+            );
             let bytes = resp.to_bytes();
-            stream.write_all(&bytes).await.map_err(|e| format!("write: {}", e))?;
+            stream
+                .write_all(&bytes)
+                .await
+                .map_err(|e| format!("write: {}", e))?;
             return Ok(());
         }
     }
@@ -131,7 +176,10 @@ async fn handle_gateway_connection(
     };
 
     let bytes = resp.to_bytes();
-    stream.write_all(&bytes).await.map_err(|e| format!("write: {}", e))?;
+    stream
+        .write_all(&bytes)
+        .await
+        .map_err(|e| format!("write: {}", e))?;
     stream.flush().await.map_err(|e| format!("flush: {}", e))?;
 
     Ok(())
@@ -152,7 +200,11 @@ fn gateway_route(
         "/search" => {
             let query = req.query.get("q").cloned().unwrap_or_default();
             let schema = req.query.get("schema").cloned();
-            let limit: usize = req.query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
+            let limit: usize = req
+                .query
+                .get("limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20);
             let effective_query = match schema {
                 Some(s) if !s.is_empty() => format!("schema:{} {}", s, query),
                 _ => query.clone(),
@@ -160,18 +212,26 @@ fn gateway_route(
             match store.search_records(&effective_query, limit) {
                 Ok(results) => {
                     let body = serde_json::json!({"query": query, "results": results, "count": results.len()});
-                    HttpResponse::json(&body.to_string()).with_node_headers(node_id).with_record_count(results.len())
+                    HttpResponse::json(&body.to_string())
+                        .with_node_headers(node_id)
+                        .with_record_count(results.len())
                 }
                 Err(e) => HttpResponse::internal_error(&e),
             }
         }
         "/records" => {
             let schema = req.query.get("schema").map(|s| s.as_str());
-            let limit: usize = req.query.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50);
+            let limit: usize = req
+                .query
+                .get("limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50);
             match store.list_records(schema, limit) {
                 Ok(records) => {
                     let body = serde_json::json!({"records": records, "count": records.len()});
-                    HttpResponse::json(&body.to_string()).with_node_headers(node_id).with_record_count(records.len())
+                    HttpResponse::json(&body.to_string())
+                        .with_node_headers(node_id)
+                        .with_record_count(records.len())
                 }
                 Err(e) => HttpResponse::internal_error(&e),
             }

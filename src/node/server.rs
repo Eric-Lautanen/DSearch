@@ -6,8 +6,9 @@ use crate::proto::msg_type::*;
 use ed25519_dalek::SigningKey;
 use quinn::Endpoint;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, error, info, warn};
 
@@ -16,7 +17,6 @@ const DEFAULT_MAX_CONNECTIONS: usize = 200;
 
 pub struct Node {
     pub node_id: String,
-    pub signing_key: SigningKey,
     pub role: NodeRole,
     pub data_dir: std::path::PathBuf,
     pub listen_addr: SocketAddr,
@@ -32,17 +32,24 @@ pub struct Node {
 
 impl Node {
     pub fn new(
-        signing_key: SigningKey,
+        _signing_key: SigningKey,
         node_id: String,
         role: NodeRole,
         data_dir: std::path::PathBuf,
         listen_addr: SocketAddr,
     ) -> Self {
-        Self::with_max_connections(signing_key, node_id, role, data_dir, listen_addr, DEFAULT_MAX_CONNECTIONS)
+        Self::with_max_connections(
+            _signing_key,
+            node_id,
+            role,
+            data_dir,
+            listen_addr,
+            DEFAULT_MAX_CONNECTIONS,
+        )
     }
 
     pub fn with_max_connections(
-        signing_key: SigningKey,
+        _signing_key: SigningKey,
         node_id: String,
         role: NodeRole,
         data_dir: std::path::PathBuf,
@@ -52,7 +59,6 @@ impl Node {
         let routing_table = Arc::new(RwLock::new(RoutingTable::new(node_id.clone())));
         Self {
             node_id,
-            signing_key,
             role,
             data_dir,
             listen_addr,
@@ -82,13 +88,18 @@ impl Node {
         let (inbound_tx, _inbound_rx) = mpsc::channel::<Vec<u8>>(256);
         self.shutdown_tx = Some(shutdown_tx);
         self.endpoint = Some(endpoint);
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
-        info!("Node {} listening on {}", &self.node_id[..8], self.listen_addr);
+        info!(
+            "Node {} listening on {}",
+            &self.node_id[..8],
+            self.listen_addr
+        );
 
         let routing_table = self.routing_table.clone();
         let node_id = self.node_id.clone();
-        let role = self.role.clone();
+        let role = self.role;
         let running = self.running.clone();
         let endpoint_ref = self.endpoint.as_ref().unwrap().clone();
         let data_dir = self.data_dir.clone();
@@ -127,15 +138,12 @@ impl Node {
                                 if active_connections.load(Ordering::Relaxed) >= max_connections {
                                     warn!("Connection pool full ({}/{}), rejecting incoming", active_connections.load(Ordering::Relaxed), max_connections);
                                     // Accept then immediately close to avoid hanging the remote
-                                    match incoming.await {
-                                        Ok(conn) => { conn.close(0u32.into(), b"connection pool full"); }
-                                        Err(_) => {}
-                                    }
+                                    if let Ok(conn) = incoming.await { conn.close(0u32.into(), b"connection pool full"); }
                                     continue;
                                 }
                                 let rt = routing_table.clone();
                                 let nid = node_id.clone();
-                                let r = role.clone();
+                                let r = role;
                                 let running = running.clone();
                                 let dd = data_dir.clone();
                                 let ac = active_connections.clone();
@@ -166,7 +174,10 @@ impl Node {
     /// Connect to a peer and perform handshake.
     /// Spawns a persistent message-handling loop on the outbound stream
     /// so the stream stays alive (not dropped after handshake).
-    pub async fn connect_to_peer(&self, addr: SocketAddr) -> Result<quinn::Connection, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn connect_to_peer(
+        &self,
+        addr: SocketAddr,
+    ) -> Result<quinn::Connection, Box<dyn std::error::Error + Send + Sync>> {
         let endpoint = self.endpoint.as_ref().ok_or("Endpoint not started")?;
         let conn = endpoint.connect(addr, "dsearch")?.await?;
 
@@ -187,11 +198,20 @@ impl Node {
         if let Some(ack_frame) = frame::read_frame(&mut recv).await? {
             if ack_frame.msg_type == MsgType::HandshakeAck {
                 let ack: HandshakeAck = ack_frame.decode_payload()?;
-                debug!("HandshakeAck from {} (version {})", &ack.node_id[..8.min(ack.node_id.len())], ack.version);
+                debug!(
+                    "HandshakeAck from {} (version {})",
+                    &ack.node_id[..8.min(ack.node_id.len())],
+                    ack.version
+                );
 
                 if abs_diff(ack.version, PROTOCOL_VERSION) > 1 {
-                    warn!("Incompatible protocol version: local={}, remote={}", PROTOCOL_VERSION, ack.version);
-                    let goodbye = Goodbye { reason: "incompatible version".to_string() };
+                    warn!(
+                        "Incompatible protocol version: local={}, remote={}",
+                        PROTOCOL_VERSION, ack.version
+                    );
+                    let goodbye = Goodbye {
+                        reason: "incompatible version".to_string(),
+                    };
                     let goodbye_frame = Frame::new(MsgType::Goodbye, serde_json::to_vec(&goodbye)?);
                     frame::write_frame(&mut send, &goodbye_frame).await?;
                     conn.close(0u32.into(), b"incompatible version");
@@ -207,7 +227,10 @@ impl Node {
                 };
                 peer_node_id = ack.node_id.clone();
                 self.routing_table.write().await.insert(entry);
-                info!("Peer {} added to routing table (outbound)", &ack.node_id[..8.min(ack.node_id.len())]);
+                info!(
+                    "Peer {} added to routing table (outbound)",
+                    &ack.node_id[..8.min(ack.node_id.len())]
+                );
 
                 // Write peers file immediately
                 self.write_peers_file().await;
@@ -223,8 +246,21 @@ impl Node {
         let data_dir = self.data_dir.clone();
         let peer_id = peer_node_id.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_messages(&mut recv, &mut send, &routing_table, &peer_id, running, &data_dir).await {
-                debug!("Outbound message loop ended for {}: {}", &peer_id[..8.min(peer_id.len())], e);
+            if let Err(e) = handle_messages(
+                &mut recv,
+                &mut send,
+                &routing_table,
+                &peer_id,
+                running,
+                &data_dir,
+            )
+            .await
+            {
+                debug!(
+                    "Outbound message loop ended for {}: {}",
+                    &peer_id[..8.min(peer_id.len())],
+                    e
+                );
             }
         });
 
@@ -245,7 +281,8 @@ impl Node {
         // Signal all message loops to send Goodbye and exit.
         // Must happen *before* we close the endpoint, or the streams
         // are torn down before the Goodbye can be written.
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         // Give the message loops a moment to send their Goodbye frames
         if peer_count > 0 {
@@ -267,14 +304,18 @@ impl Node {
     /// Write current routing table to peers.json for CLI access.
     async fn write_peers_file(&self) {
         let rt = self.routing_table.read().await;
-        let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-            serde_json::json!({
-                "node_id": e.node_id,
-                "addr": e.addr,
-                "roles": e.roles,
-                "last_seen": e.last_seen,
+        let peers: Vec<serde_json::Value> = rt
+            .list()
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "node_id": e.node_id,
+                    "addr": e.addr,
+                    "roles": e.roles,
+                    "last_seen": e.last_seen,
+                })
             })
-        }).collect();
+            .collect();
         let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
         let _ = std::fs::write(self.data_dir.join("peers.json"), peers_json);
     }
@@ -299,10 +340,16 @@ async fn handle_connection(
     if let Some(hs_frame) = frame::read_frame(&mut recv).await? {
         if hs_frame.msg_type == MsgType::Handshake {
             let hs: Handshake = hs_frame.decode_payload()?;
-            debug!("Handshake from {} (version {})", &hs.node_id[..8.min(hs.node_id.len())], hs.version);
+            debug!(
+                "Handshake from {} (version {})",
+                &hs.node_id[..8.min(hs.node_id.len())],
+                hs.version
+            );
 
             if abs_diff(hs.version, PROTOCOL_VERSION) > 1 {
-                let goodbye = Goodbye { reason: "incompatible version".to_string() };
+                let goodbye = Goodbye {
+                    reason: "incompatible version".to_string(),
+                };
                 let goodbye_frame = Frame::new(MsgType::Goodbye, serde_json::to_vec(&goodbye)?);
                 frame::write_frame(&mut send, &goodbye_frame).await?;
                 conn.close(0u32.into(), b"incompatible version");
@@ -327,7 +374,10 @@ async fn handle_connection(
                 last_seen: now_secs(),
             };
             routing_table.write().await.insert(entry);
-            info!("Peer {} connected (inbound, added to routing table)", &hs.node_id[..8.min(hs.node_id.len())]);
+            info!(
+                "Peer {} connected (inbound, added to routing table)",
+                &hs.node_id[..8.min(hs.node_id.len())]
+            );
 
             // Write peers file immediately after inbound insert
             write_peers_file(&routing_table, &data_dir).await;
@@ -338,8 +388,14 @@ async fn handle_connection(
             let peer_id = hs.node_id.clone();
             let dd = data_dir.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_messages(&mut recv, &mut send, &rt, &peer_id, running, &dd).await {
-                    debug!("Message loop ended for {}: {}", &peer_id[..8.min(peer_id.len())], e);
+                if let Err(e) =
+                    handle_messages(&mut recv, &mut send, &rt, &peer_id, running, &dd).await
+                {
+                    debug!(
+                        "Message loop ended for {}: {}",
+                        &peer_id[..8.min(peer_id.len())],
+                        e
+                    );
                 }
             });
         }
@@ -360,15 +416,23 @@ async fn handle_messages(
     // or connection error. Without this, a hard connection close (e.g.
     // endpoint.close()) returns Err from read_frame, and the ? operator
     // would skip the cleanup that only the None arm did.
-    let result = handle_messages_inner(recv, send, routing_table, peer_node_id, running, data_dir).await;
+    let result =
+        handle_messages_inner(recv, send, routing_table, peer_node_id, running, data_dir).await;
 
     // Always remove peer and update peers.json, regardless of exit reason
     routing_table.write().await.remove(peer_node_id);
     write_peers_file(routing_table, data_dir).await;
 
     match &result {
-        Ok(()) => info!("Peer {} disconnected (clean)", &peer_node_id[..8.min(peer_node_id.len())]),
-        Err(e) => info!("Peer {} disconnected (error: {})", &peer_node_id[..8.min(peer_node_id.len())], e),
+        Ok(()) => info!(
+            "Peer {} disconnected (clean)",
+            &peer_node_id[..8.min(peer_node_id.len())]
+        ),
+        Err(e) => info!(
+            "Peer {} disconnected (error: {})",
+            &peer_node_id[..8.min(peer_node_id.len())],
+            e
+        ),
     }
 
     result
@@ -380,7 +444,7 @@ async fn handle_messages_inner(
     routing_table: &Arc<RwLock<RoutingTable>>,
     peer_node_id: &str,
     running: Arc<std::sync::atomic::AtomicBool>,
-    data_dir: &std::path::PathBuf,
+    _data_dir: &std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
         // Use select! so that a shutdown signal (running=false) is detected
@@ -403,38 +467,50 @@ async fn handle_messages_inner(
         };
 
         match frame_result? {
-            Some(f) => {
-                match f.msg_type {
-                    MsgType::Ping => {
-                        let ping: Ping = f.decode_payload()?;
-                        let pong = Pong { nonce: ping.nonce };
-                        let pong_frame = Frame::new(MsgType::Pong, serde_json::to_vec(&pong)?);
-                        frame::write_frame(send, &pong_frame).await?;
-                    }
-                    MsgType::FindNode => {
-                        let fn_msg: FindNode = f.decode_payload()?;
-                        let closest = routing_table.read().await.find_closest(&fn_msg.target_id, 20);
-                        let reply = FindNodeReply {
-                            nodes: closest.into_iter().map(|e| NodeInfo {
+            Some(f) => match f.msg_type {
+                MsgType::Ping => {
+                    let ping: Ping = f.decode_payload()?;
+                    let pong = Pong { nonce: ping.nonce };
+                    let pong_frame = Frame::new(MsgType::Pong, serde_json::to_vec(&pong)?);
+                    frame::write_frame(send, &pong_frame).await?;
+                }
+                MsgType::FindNode => {
+                    let fn_msg: FindNode = f.decode_payload()?;
+                    let closest = routing_table
+                        .read()
+                        .await
+                        .find_closest(&fn_msg.target_id, 20);
+                    let reply = FindNodeReply {
+                        nodes: closest
+                            .into_iter()
+                            .map(|e| NodeInfo {
                                 id: e.node_id,
                                 addr: e.addr,
-                            }).collect(),
-                        };
-                        let reply_frame = Frame::new(MsgType::FindNodeReply, serde_json::to_vec(&reply)?);
-                        frame::write_frame(send, &reply_frame).await?;
-                    }
-                    MsgType::Goodbye => {
-                        let gb: Goodbye = f.decode_payload()?;
-                        info!("Peer {} sent Goodbye: {}", &peer_node_id[..8.min(peer_node_id.len())], gb.reason);
-                        return Ok(());
-                    }
-                    _ => {
-                        debug!("Ignoring unknown message type: {:?}", f.msg_type);
-                    }
+                            })
+                            .collect(),
+                    };
+                    let reply_frame =
+                        Frame::new(MsgType::FindNodeReply, serde_json::to_vec(&reply)?);
+                    frame::write_frame(send, &reply_frame).await?;
                 }
-            }
+                MsgType::Goodbye => {
+                    let gb: Goodbye = f.decode_payload()?;
+                    info!(
+                        "Peer {} sent Goodbye: {}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        gb.reason
+                    );
+                    return Ok(());
+                }
+                _ => {
+                    debug!("Ignoring unknown message type: {:?}", f.msg_type);
+                }
+            },
             None => {
-                info!("Stream from {} closed", &peer_node_id[..8.min(peer_node_id.len())]);
+                info!(
+                    "Stream from {} closed",
+                    &peer_node_id[..8.min(peer_node_id.len())]
+                );
                 return Ok(());
             }
         }
@@ -442,25 +518,26 @@ async fn handle_messages_inner(
 }
 
 /// Helper: write current routing table to peers.json.
-async fn write_peers_file(
-    routing_table: &Arc<RwLock<RoutingTable>>,
-    data_dir: &std::path::PathBuf,
-) {
+async fn write_peers_file(routing_table: &Arc<RwLock<RoutingTable>>, data_dir: &Path) {
     let rt = routing_table.read().await;
-    let peers: Vec<serde_json::Value> = rt.list().iter().map(|e| {
-        serde_json::json!({
-            "node_id": e.node_id,
-            "addr": e.addr,
-            "roles": e.roles,
-            "last_seen": e.last_seen,
+    let peers: Vec<serde_json::Value> = rt
+        .list()
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "node_id": e.node_id,
+                "addr": e.addr,
+                "roles": e.roles,
+                "last_seen": e.last_seen,
+            })
         })
-    }).collect();
+        .collect();
     let peers_json = serde_json::to_string_pretty(&peers).unwrap_or_default();
     let _ = std::fs::write(data_dir.join("peers.json"), peers_json);
 }
 
 fn abs_diff(a: u8, b: u8) -> u8 {
-    if a > b { a - b } else { b - a }
+    a.abs_diff(b)
 }
 
 fn now_secs() -> u64 {

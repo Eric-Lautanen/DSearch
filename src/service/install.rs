@@ -1,3 +1,4 @@
+use std::fs;
 /// Service management — install/enable/disable/status/uninstall.
 ///
 /// Platform-specific registration:
@@ -5,12 +6,11 @@
 /// - macOS: launchd plist
 /// - Windows: Windows Service via sc.exe
 use std::path::{Path, PathBuf};
-use std::fs;
 
 /// Install the service for the current platform.
 pub fn service_install(data_dir: &Path, headless: bool) -> Result<String, String> {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("Cannot determine executable path: {}", e))?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("Cannot determine executable path: {}", e))?;
     let exe_str = exe.to_str().ok_or("Executable path is not valid UTF-8")?;
 
     if cfg!(target_os = "linux") {
@@ -111,7 +111,11 @@ pub fn service_status(data_dir: &Path) -> Result<String, String> {
     let registered = is_service_registered(data_dir);
     let running = is_service_running(data_dir);
 
-    let reg_str = if registered { "registered" } else { "not registered" };
+    let reg_str = if registered {
+        "registered"
+    } else {
+        "not registered"
+    };
     let run_str = if running { "running" } else { "stopped" };
 
     Ok(format!("Service: {} | {}", reg_str, run_str))
@@ -144,8 +148,7 @@ pub fn service_uninstall(_data_dir: &Path) -> Result<String, String> {
             .output();
         let plist_path = launchd_plist_path();
         if plist_path.exists() {
-            fs::remove_file(&plist_path)
-                .map_err(|e| format!("Failed to remove plist: {}", e))?;
+            fs::remove_file(&plist_path).map_err(|e| format!("Failed to remove plist: {}", e))?;
         }
         Ok("Service uninstalled".to_string())
     } else if cfg!(target_os = "windows") {
@@ -174,9 +177,14 @@ fn install_systemd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<St
     fs::create_dir_all(&unit_dir)
         .map_err(|e| format!("Failed to create systemd unit dir: {}", e))?;
 
-    let data_dir_str = data_dir.to_str().ok_or("Data dir path is not valid UTF-8")?;
+    let data_dir_str = data_dir
+        .to_str()
+        .ok_or("Data dir path is not valid UTF-8")?;
     let node_cmd = if headless {
-        format!("{} node start --headless --data-dir {}", exe_path, data_dir_str)
+        format!(
+            "{} node start --headless --data-dir {}",
+            exe_path, data_dir_str
+        )
     } else {
         format!("{} node start --data-dir {}", exe_path, data_dir_str)
     };
@@ -209,7 +217,10 @@ fn install_systemd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<St
     // Write marker file so we can detect registration
     write_service_marker(data_dir, "systemd")?;
 
-    Ok(format!("Service installed (systemd user unit at {})", unit_path.display()))
+    Ok(format!(
+        "Service installed (systemd user unit at {})",
+        unit_path.display()
+    ))
 }
 
 fn install_launchd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<String, String> {
@@ -217,14 +228,30 @@ fn install_launchd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<St
     fs::create_dir_all(&plist_dir)
         .map_err(|e| format!("Failed to create launchd plist dir: {}", e))?;
 
-    let data_dir_str = data_dir.to_str().ok_or("Data dir path is not valid UTF-8")?;
+    let data_dir_str = data_dir
+        .to_str()
+        .ok_or("Data dir path is not valid UTF-8")?;
     let node_cmd = if headless {
-        vec![exe_path.to_string(), "node".to_string(), "start".to_string(), "--headless".to_string(), "--data-dir".to_string(), data_dir_str.to_string()]
+        vec![
+            exe_path.to_string(),
+            "node".to_string(),
+            "start".to_string(),
+            "--headless".to_string(),
+            "--data-dir".to_string(),
+            data_dir_str.to_string(),
+        ]
     } else {
-        vec![exe_path.to_string(), "node".to_string(), "start".to_string(), "--data-dir".to_string(), data_dir_str.to_string()]
+        vec![
+            exe_path.to_string(),
+            "node".to_string(),
+            "start".to_string(),
+            "--data-dir".to_string(),
+            data_dir_str.to_string(),
+        ]
     };
 
-    let args_xml: String = node_cmd.iter()
+    let args_xml: String = node_cmd
+        .iter()
         .map(|a| format!("<string>{}</string>", a))
         .collect::<Vec<_>>()
         .join("\n        ");
@@ -249,8 +276,7 @@ fn install_launchd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<St
     );
 
     let plist_path = launchd_plist_path();
-    fs::write(&plist_path, &plist_content)
-        .map_err(|e| format!("Failed to write plist: {}", e))?;
+    fs::write(&plist_path, &plist_content).map_err(|e| format!("Failed to write plist: {}", e))?;
 
     // Load the plist
     let _ = std::process::Command::new("launchctl")
@@ -260,21 +286,40 @@ fn install_launchd(data_dir: &Path, exe_path: &str, headless: bool) -> Result<St
 
     write_service_marker(data_dir, "launchd")?;
 
-    Ok(format!("Service installed (launchd plist at {})", plist_path.display()))
+    Ok(format!(
+        "Service installed (launchd plist at {})",
+        plist_path.display()
+    ))
 }
 
-fn install_windows_service(data_dir: &Path, exe_path: &str, headless: bool) -> Result<String, String> {
-    let data_dir_str = data_dir.to_str().ok_or("Data dir path is not valid UTF-8")?;
+fn install_windows_service(
+    data_dir: &Path,
+    exe_path: &str,
+    headless: bool,
+) -> Result<String, String> {
+    let data_dir_str = data_dir
+        .to_str()
+        .ok_or("Data dir path is not valid UTF-8")?;
 
     // Create the service using sc.exe
     let bin_path = if headless {
-        format!("{} node start --headless --data-dir {}", exe_path, data_dir_str)
+        format!(
+            "{} node start --headless --data-dir {}",
+            exe_path, data_dir_str
+        )
     } else {
         format!("{} node start --data-dir {}", exe_path, data_dir_str)
     };
 
     let output = std::process::Command::new("sc")
-        .args(["create", "DSearch", "binPath=", &bin_path, "start=demand", "DisplayName=DSearch Node"])
+        .args([
+            "create",
+            "DSearch",
+            "binPath=",
+            &bin_path,
+            "start=demand",
+            "DisplayName=DSearch Node",
+        ])
         .output()
         .map_err(|e| format!("Failed to run sc: {}", e))?;
 

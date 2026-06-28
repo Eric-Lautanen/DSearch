@@ -25,5 +25,7 @@ rand               = "0.8"   # crypto primitive: CSPRNG for key generation
 hex                = "0.4"   # hex encoding for node IDs and keys
 image              = { version = "0.25", default-features = false, features = ["png"] }  # PNG decoding for tray icon — avoids hand-rolling PNG inflate
 
+x509-cert          = "0.2"  # X.509 certificate parsing for cert verification
+
 [dev-dependencies]
 tempfile = "3"

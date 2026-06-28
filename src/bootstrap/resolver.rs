@@ -1,4 +1,4 @@
-use crate::bootstrap::defaults::{BootstrapPeer, default_bootstrap_peers};
+use crate::bootstrap::defaults::{default_bootstrap_peers, BootstrapPeer};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +45,12 @@ pub fn resolve_bootstrap_peers(data_dir: &std::path::Path) -> Vec<BootstrapPeer>
 }
 
 /// Write a bootstrap.toml with a specific peer entry.
-pub fn write_bootstrap_peer(data_dir: &std::path::Path, id: &str, addr: &str, note: &str) -> Result<(), std::io::Error> {
+pub fn write_bootstrap_peer(
+    data_dir: &std::path::Path,
+    id: &str,
+    addr: &str,
+    note: &str,
+) -> Result<(), std::io::Error> {
     let toml_path = data_dir.join("bootstrap.toml");
     let mut config = if toml_path.exists() {
         let contents = std::fs::read_to_string(&toml_path)?;

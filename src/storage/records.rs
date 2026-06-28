@@ -1,15 +1,12 @@
-use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
-use crate::model::ContentRecord;
 use crate::model::Announcement;
+use crate::model::ContentRecord;
+use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
 
 // Table definitions
 pub const RECORDS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("records");
 pub const ANNOUNCEMENTS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("announcements");
 pub const SOURCE_INDEX_TABLE: TableDefinition<&str, &str> = TableDefinition::new("source_index");
 pub const PINS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("pins");
-pub const ROUTING_TABLE: TableDefinition<&str, &str> = TableDefinition::new("routing");
-pub const PEERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("peers");
-pub const BANNED_PEERS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("banned_peers");
 
 /// Insert a ContentRecord into the store.
 pub enum InsertResult {
@@ -19,23 +16,30 @@ pub enum InsertResult {
 }
 
 pub fn insert_record(db: &Database, record: &ContentRecord) -> Result<InsertResult, String> {
-    record.validate_size().map_err(|e| format!("record validation: {}", e))?;
+    record
+        .validate_size()
+        .map_err(|e| format!("record validation: {}", e))?;
 
     // Phase 1: read-only check for dedup
     let dedup_info = {
-        let read_tx = db.begin_read().map_err(|e| format!("insert read tx: {}", e))?;
-        let source_index = read_tx.open_table(SOURCE_INDEX_TABLE)
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("insert read tx: {}", e))?;
+        let source_index = read_tx
+            .open_table(SOURCE_INDEX_TABLE)
             .map_err(|e| format!("open source_index: {}", e))?;
         match source_index.get(&record.source_hash.as_str()) {
             Ok(Some(existing_id_guard)) => {
                 let existing_id = existing_id_guard.value().to_string();
                 drop(source_index);
-                let records = read_tx.open_table(RECORDS_TABLE)
+                let records = read_tx
+                    .open_table(RECORDS_TABLE)
                     .map_err(|e| format!("open records for dedup check: {}", e))?;
                 match records.get(&existing_id.as_str()) {
                     Ok(Some(existing_json_guard)) => {
-                        let existing: ContentRecord = serde_json::from_str(existing_json_guard.value())
-                            .map_err(|e| format!("parse existing record: {}", e))?;
+                        let existing: ContentRecord =
+                            serde_json::from_str(existing_json_guard.value())
+                                .map_err(|e| format!("parse existing record: {}", e))?;
                         if existing.created_at >= record.created_at {
                             Some((existing_id, false))
                         } else {
@@ -54,48 +58,63 @@ pub fn insert_record(db: &Database, record: &ContentRecord) -> Result<InsertResu
     let result = match dedup_info {
         Some((_existing_id, false)) => return Ok(InsertResult::SkippedOlder),
         Some((existing_id, true)) => {
-            let write_tx = db.begin_write().map_err(|e| format!("dedup delete write tx: {}", e))?;
+            let write_tx = db
+                .begin_write()
+                .map_err(|e| format!("dedup delete write tx: {}", e))?;
             {
-                let mut records = write_tx.open_table(RECORDS_TABLE)
+                let mut records = write_tx
+                    .open_table(RECORDS_TABLE)
                     .map_err(|e| format!("open records for dedup delete: {}", e))?;
-                records.remove(&existing_id.as_str())
+                records
+                    .remove(&existing_id.as_str())
                     .map_err(|e| format!("remove old record: {}", e))?;
             }
-            write_tx.commit().map_err(|e| format!("dedup delete commit: {}", e))?;
+            write_tx
+                .commit()
+                .map_err(|e| format!("dedup delete commit: {}", e))?;
             InsertResult::ReplacedNewer
         }
         None => InsertResult::Inserted,
     };
 
     // Phase 2: insert the new record
-    let json = serde_json::to_string(record)
-        .map_err(|e| format!("serialize record: {}", e))?;
+    let json = serde_json::to_string(record).map_err(|e| format!("serialize record: {}", e))?;
 
-    let write_tx = db.begin_write().map_err(|e| format!("insert write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("insert write tx: {}", e))?;
     {
-        let mut records = write_tx.open_table(RECORDS_TABLE)
+        let mut records = write_tx
+            .open_table(RECORDS_TABLE)
             .map_err(|e| format!("open records: {}", e))?;
-        records.insert(record.id.as_str(), json.as_str())
+        records
+            .insert(record.id.as_str(), json.as_str())
             .map_err(|e| format!("insert record: {}", e))?;
     }
     {
-        let source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+        let source_index = write_tx
+            .open_table(SOURCE_INDEX_TABLE)
             .map_err(|e| format!("open source_index: {}", e))?;
         // Need to drop the immutable reference before getting a mutable one
         drop(source_index);
-        let mut source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+        let mut source_index = write_tx
+            .open_table(SOURCE_INDEX_TABLE)
             .map_err(|e| format!("reopen source_index: {}", e))?;
-        source_index.insert(record.source_hash.as_str(), record.id.as_str())
+        source_index
+            .insert(record.source_hash.as_str(), record.id.as_str())
             .map_err(|e| format!("update source_index: {}", e))?;
     }
-    write_tx.commit().map_err(|e| format!("insert commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("insert commit: {}", e))?;
     Ok(result)
 }
 
 /// Get a ContentRecord by ID.
 pub fn get_record(db: &Database, id: &str) -> Result<Option<ContentRecord>, String> {
     let read_tx = db.begin_read().map_err(|e| format!("get read tx: {}", e))?;
-    let table = read_tx.open_table(RECORDS_TABLE)
+    let table = read_tx
+        .open_table(RECORDS_TABLE)
         .map_err(|e| format!("open records: {}", e))?;
     match table.get(id) {
         Ok(Some(guard)) => {
@@ -109,9 +128,16 @@ pub fn get_record(db: &Database, id: &str) -> Result<Option<ContentRecord>, Stri
 }
 
 /// List records, optionally filtered by schema, with a limit.
-pub fn list_records(db: &Database, schema: Option<&str>, limit: usize) -> Result<Vec<ContentRecord>, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("list read tx: {}", e))?;
-    let table = read_tx.open_table(RECORDS_TABLE)
+pub fn list_records(
+    db: &Database,
+    schema: Option<&str>,
+    limit: usize,
+) -> Result<Vec<ContentRecord>, String> {
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("list read tx: {}", e))?;
+    let table = read_tx
+        .open_table(RECORDS_TABLE)
         .map_err(|e| format!("open records: {}", e))?;
 
     let mut results = Vec::new();
@@ -140,8 +166,11 @@ pub fn list_records(db: &Database, schema: Option<&str>, limit: usize) -> Result
 pub fn delete_record(db: &Database, id: &str) -> Result<bool, String> {
     // Read the record first to get source_hash
     let source_hash = {
-        let read_tx = db.begin_read().map_err(|e| format!("delete read tx: {}", e))?;
-        let table = read_tx.open_table(RECORDS_TABLE)
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("delete read tx: {}", e))?;
+        let table = read_tx
+            .open_table(RECORDS_TABLE)
             .map_err(|e| format!("open records: {}", e))?;
         match table.get(id) {
             Ok(Some(guard)) => {
@@ -154,18 +183,24 @@ pub fn delete_record(db: &Database, id: &str) -> Result<bool, String> {
         }
     };
 
-    let write_tx = db.begin_write().map_err(|e| format!("delete write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("delete write tx: {}", e))?;
 
     {
-        let mut records = write_tx.open_table(RECORDS_TABLE)
+        let mut records = write_tx
+            .open_table(RECORDS_TABLE)
             .map_err(|e| format!("open records for delete: {}", e))?;
-        records.remove(id).map_err(|e| format!("remove record: {}", e))?;
+        records
+            .remove(id)
+            .map_err(|e| format!("remove record: {}", e))?;
     }
 
     if let Some(sh) = &source_hash {
         // Check if source_index points to this record
         let should_remove = {
-            let source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+            let source_index = write_tx
+                .open_table(SOURCE_INDEX_TABLE)
                 .map_err(|e| format!("open source_index for delete check: {}", e))?;
             let result = match source_index.get(&sh.as_str()) {
                 Ok(Some(existing_id)) => existing_id.value() == id,
@@ -174,20 +209,25 @@ pub fn delete_record(db: &Database, id: &str) -> Result<bool, String> {
             result
         };
         if should_remove {
-            let mut source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+            let mut source_index = write_tx
+                .open_table(SOURCE_INDEX_TABLE)
                 .map_err(|e| format!("reopen source_index for delete: {}", e))?;
-            source_index.remove(&sh.as_str())
+            source_index
+                .remove(&sh.as_str())
                 .map_err(|e| format!("remove source_index: {}", e))?;
         }
     }
 
     {
-        let mut pins = write_tx.open_table(PINS_TABLE)
+        let mut pins = write_tx
+            .open_table(PINS_TABLE)
             .map_err(|e| format!("open pins for delete: {}", e))?;
         pins.remove(id).map_err(|e| format!("remove pin: {}", e))?;
     }
 
-    write_tx.commit().map_err(|e| format!("delete commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("delete commit: {}", e))?;
     Ok(true)
 }
 
@@ -196,16 +236,24 @@ pub fn pin_record(db: &Database, id: &str) -> Result<bool, String> {
     // Verify record exists
     {
         let read_tx = db.begin_read().map_err(|e| format!("pin read tx: {}", e))?;
-        let table = read_tx.open_table(RECORDS_TABLE)
+        let table = read_tx
+            .open_table(RECORDS_TABLE)
             .map_err(|e| format!("open records: {}", e))?;
-        if table.get(id).map_err(|e| format!("get record: {}", e))?.is_none() {
+        if table
+            .get(id)
+            .map_err(|e| format!("get record: {}", e))?
+            .is_none()
+        {
             return Ok(false);
         }
     }
 
-    let write_tx = db.begin_write().map_err(|e| format!("pin write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("pin write tx: {}", e))?;
     {
-        let mut pins = write_tx.open_table(PINS_TABLE)
+        let mut pins = write_tx
+            .open_table(PINS_TABLE)
             .map_err(|e| format!("open pins: {}", e))?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -215,15 +263,20 @@ pub fn pin_record(db: &Database, id: &str) -> Result<bool, String> {
         pins.insert(id, now_str.as_str())
             .map_err(|e| format!("insert pin: {}", e))?;
     }
-    write_tx.commit().map_err(|e| format!("pin commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("pin commit: {}", e))?;
     Ok(true)
 }
 
 /// Unpin a record by ID.
 pub fn unpin_record(db: &Database, id: &str) -> Result<bool, String> {
-    let write_tx = db.begin_write().map_err(|e| format!("unpin write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("unpin write tx: {}", e))?;
     let removed = {
-        let mut pins = write_tx.open_table(PINS_TABLE)
+        let mut pins = write_tx
+            .open_table(PINS_TABLE)
             .map_err(|e| format!("open pins: {}", e))?;
         let result = match pins.remove(id) {
             Ok(guard) => guard.is_some(),
@@ -231,14 +284,19 @@ pub fn unpin_record(db: &Database, id: &str) -> Result<bool, String> {
         };
         result
     };
-    write_tx.commit().map_err(|e| format!("unpin commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("unpin commit: {}", e))?;
     Ok(removed)
 }
 
 /// Check if a record is pinned.
 pub fn is_pinned(db: &Database, id: &str) -> Result<bool, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("is_pinned read tx: {}", e))?;
-    let table = read_tx.open_table(PINS_TABLE)
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("is_pinned read tx: {}", e))?;
+    let table = read_tx
+        .open_table(PINS_TABLE)
         .map_err(|e| format!("open pins: {}", e))?;
     match table.get(id) {
         Ok(Some(_)) => Ok(true),
@@ -249,45 +307,27 @@ pub fn is_pinned(db: &Database, id: &str) -> Result<bool, String> {
 
 /// Insert an Announcement.
 pub fn insert_announcement(db: &Database, ann: &Announcement) -> Result<(), String> {
-    ann.validate_size().map_err(|e| format!("announcement validation: {}", e))?;
+    ann.validate_size()
+        .map_err(|e| format!("announcement validation: {}", e))?;
 
     let key = format!("{}:{}", ann.record_id, ann.holder_addr);
-    let json = serde_json::to_string(ann)
-        .map_err(|e| format!("serialize announcement: {}", e))?;
+    let json = serde_json::to_string(ann).map_err(|e| format!("serialize announcement: {}", e))?;
 
-    let write_tx = db.begin_write().map_err(|e| format!("ann write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("ann write tx: {}", e))?;
     {
-        let mut table = write_tx.open_table(ANNOUNCEMENTS_TABLE)
+        let mut table = write_tx
+            .open_table(ANNOUNCEMENTS_TABLE)
             .map_err(|e| format!("open announcements: {}", e))?;
-        table.insert(key.as_str(), json.as_str())
+        table
+            .insert(key.as_str(), json.as_str())
             .map_err(|e| format!("insert announcement: {}", e))?;
     }
-    write_tx.commit().map_err(|e| format!("ann commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("ann commit: {}", e))?;
     Ok(())
-}
-
-/// List announcements, optionally filtered by record_id.
-pub fn list_announcements(db: &Database, record_id: Option<&str>) -> Result<Vec<Announcement>, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("list ann read tx: {}", e))?;
-    let table = read_tx.open_table(ANNOUNCEMENTS_TABLE)
-        .map_err(|e| format!("open announcements: {}", e))?;
-
-    let mut results = Vec::new();
-    for entry_result in table.iter().map_err(|e| format!("ann iter: {}", e))? {
-        let (_key_guard, value_guard) = entry_result.map_err(|e| format!("ann read entry: {}", e))?;
-        let ann: Announcement = serde_json::from_str(value_guard.value())
-            .map_err(|e| format!("deserialize announcement: {}", e))?;
-
-        if let Some(rid) = record_id {
-            if ann.record_id != rid {
-                continue;
-            }
-        }
-
-        results.push(ann);
-    }
-
-    Ok(results)
 }
 
 /// Delete expired records (where expires_at < now and not pinned).
@@ -295,21 +335,27 @@ pub fn list_announcements(db: &Database, record_id: Option<&str>) -> Result<Vec<
 pub fn delete_expired_records(db: &Database, now_secs: u64) -> Result<usize, String> {
     // Phase 1: collect expired record IDs and source hashes
     let to_delete: Vec<(String, String)> = {
-        let read_tx = db.begin_read().map_err(|e| format!("expiry read tx: {}", e))?;
-        let records = read_tx.open_table(RECORDS_TABLE)
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("expiry read tx: {}", e))?;
+        let records = read_tx
+            .open_table(RECORDS_TABLE)
             .map_err(|e| format!("open records for expiry: {}", e))?;
-        let pins = read_tx.open_table(PINS_TABLE)
+        let pins = read_tx
+            .open_table(PINS_TABLE)
             .map_err(|e| format!("open pins for expiry: {}", e))?;
 
         let mut expired = Vec::new();
         for entry_result in records.iter().map_err(|e| format!("expiry iter: {}", e))? {
-            let (key_guard, value_guard) = entry_result.map_err(|e| format!("expiry read entry: {}", e))?;
+            let (key_guard, value_guard) =
+                entry_result.map_err(|e| format!("expiry read entry: {}", e))?;
             let key = key_guard.value().to_string();
             let record: ContentRecord = serde_json::from_str(value_guard.value())
                 .map_err(|e| format!("deserialize record for expiry: {}", e))?;
 
             if record.expires_at > 0 && record.expires_at < now_secs {
-                let pinned = pins.get(&key.as_str())
+                let pinned = pins
+                    .get(&key.as_str())
                     .map(|v| v.is_some())
                     .unwrap_or(false);
                 if !pinned {
@@ -326,17 +372,22 @@ pub fn delete_expired_records(db: &Database, now_secs: u64) -> Result<usize, Str
     }
 
     // Phase 2: delete them
-    let write_tx = db.begin_write().map_err(|e| format!("expiry write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("expiry write tx: {}", e))?;
     for (id, source_hash) in &to_delete {
         {
-            let mut records = write_tx.open_table(RECORDS_TABLE)
+            let mut records = write_tx
+                .open_table(RECORDS_TABLE)
                 .map_err(|e| format!("open records for expiry delete: {}", e))?;
-            records.remove(&id.as_str())
+            records
+                .remove(&id.as_str())
                 .map_err(|e| format!("remove expired record: {}", e))?;
         }
         {
             let should_remove = {
-                let source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+                let source_index = write_tx
+                    .open_table(SOURCE_INDEX_TABLE)
                     .map_err(|e| format!("open source_index for expiry check: {}", e))?;
                 let result = match source_index.get(&source_hash.as_str()) {
                     Ok(Some(existing_id)) => existing_id.value() == id.as_str(),
@@ -345,14 +396,18 @@ pub fn delete_expired_records(db: &Database, now_secs: u64) -> Result<usize, Str
                 result
             };
             if should_remove {
-                let mut source_index = write_tx.open_table(SOURCE_INDEX_TABLE)
+                let mut source_index = write_tx
+                    .open_table(SOURCE_INDEX_TABLE)
                     .map_err(|e| format!("reopen source_index for expiry delete: {}", e))?;
-                source_index.remove(&source_hash.as_str())
+                source_index
+                    .remove(&source_hash.as_str())
                     .map_err(|e| format!("remove source_index for expiry: {}", e))?;
             }
         }
     }
-    write_tx.commit().map_err(|e| format!("expiry commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("expiry commit: {}", e))?;
     Ok(count)
 }
 
@@ -360,13 +415,20 @@ pub fn delete_expired_records(db: &Database, now_secs: u64) -> Result<usize, Str
 pub fn delete_expired_announcements(db: &Database, now_secs: u64) -> Result<usize, String> {
     // Phase 1: collect expired keys
     let to_delete: Vec<String> = {
-        let read_tx = db.begin_read().map_err(|e| format!("ann expiry read tx: {}", e))?;
-        let table = read_tx.open_table(ANNOUNCEMENTS_TABLE)
+        let read_tx = db
+            .begin_read()
+            .map_err(|e| format!("ann expiry read tx: {}", e))?;
+        let table = read_tx
+            .open_table(ANNOUNCEMENTS_TABLE)
             .map_err(|e| format!("open announcements for expiry: {}", e))?;
 
         let mut expired = Vec::new();
-        for entry_result in table.iter().map_err(|e| format!("ann expiry iter: {}", e))? {
-            let (key_guard, value_guard) = entry_result.map_err(|e| format!("ann expiry read entry: {}", e))?;
+        for entry_result in table
+            .iter()
+            .map_err(|e| format!("ann expiry iter: {}", e))?
+        {
+            let (key_guard, value_guard) =
+                entry_result.map_err(|e| format!("ann expiry read entry: {}", e))?;
             let ann: Announcement = serde_json::from_str(value_guard.value())
                 .map_err(|e| format!("deserialize announcement for expiry: {}", e))?;
 
@@ -383,28 +445,38 @@ pub fn delete_expired_announcements(db: &Database, now_secs: u64) -> Result<usiz
     }
 
     // Phase 2: delete them
-    let write_tx = db.begin_write().map_err(|e| format!("ann expiry write tx: {}", e))?;
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("ann expiry write tx: {}", e))?;
     {
-        let mut table = write_tx.open_table(ANNOUNCEMENTS_TABLE)
+        let mut table = write_tx
+            .open_table(ANNOUNCEMENTS_TABLE)
             .map_err(|e| format!("open announcements for expiry delete: {}", e))?;
         for key in &to_delete {
-            table.remove(&key.as_str())
+            table
+                .remove(&key.as_str())
                 .map_err(|e| format!("remove expired announcement: {}", e))?;
         }
     }
-    write_tx.commit().map_err(|e| format!("ann expiry commit: {}", e))?;
+    write_tx
+        .commit()
+        .map_err(|e| format!("ann expiry commit: {}", e))?;
     Ok(count)
 }
 
 /// Get the approximate size of the records table in bytes.
 pub fn records_size_bytes(db: &Database) -> Result<u64, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("size read tx: {}", e))?;
-    let table = read_tx.open_table(RECORDS_TABLE)
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("size read tx: {}", e))?;
+    let table = read_tx
+        .open_table(RECORDS_TABLE)
         .map_err(|e| format!("open records for size: {}", e))?;
 
     let mut total: u64 = 0;
     for entry_result in table.iter().map_err(|e| format!("size iter: {}", e))? {
-        let (_key_guard, value_guard) = entry_result.map_err(|e| format!("size read entry: {}", e))?;
+        let (_key_guard, value_guard) =
+            entry_result.map_err(|e| format!("size read entry: {}", e))?;
         total += value_guard.value().len() as u64;
     }
     Ok(total)
@@ -412,16 +484,25 @@ pub fn records_size_bytes(db: &Database) -> Result<u64, String> {
 
 /// Count the number of records.
 pub fn record_count(db: &Database) -> Result<u64, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("count read tx: {}", e))?;
-    let table = read_tx.open_table(RECORDS_TABLE)
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("count read tx: {}", e))?;
+    let table = read_tx
+        .open_table(RECORDS_TABLE)
         .map_err(|e| format!("open records for count: {}", e))?;
-    Ok(table.len().map_err(|e| format!("count: {}", e))?)
+    table.len().map_err(|e| format!("count: {}", e))
 }
 
-/// Get the record_id that a source_hash maps to.
-pub fn get_record_id_by_source_hash(db: &Database, source_hash: &str) -> Result<Option<String>, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("source_index read tx: {}", e))?;
-    let table = read_tx.open_table(SOURCE_INDEX_TABLE)
+#[cfg(test)]
+pub fn get_record_id_by_source_hash(
+    db: &Database,
+    source_hash: &str,
+) -> Result<Option<String>, String> {
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("source_index read tx: {}", e))?;
+    let table = read_tx
+        .open_table(SOURCE_INDEX_TABLE)
         .map_err(|e| format!("open source_index: {}", e))?;
     match table.get(source_hash) {
         Ok(Some(id)) => Ok(Some(id.value().to_string())),
@@ -433,15 +514,13 @@ pub fn get_record_id_by_source_hash(db: &Database, source_hash: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ScrapeSource, RefreshPolicy, schema};
+    use crate::model::{schema, RefreshPolicy, ScrapeSource};
     use tempfile::TempDir;
 
     fn open_test_db() -> (TempDir, Database) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("store.redb");
-        let db = Database::builder()
-            .create(&path)
-            .expect("create db");
+        let db = Database::builder().create(&path).expect("create db");
         let write_tx = db.begin_write().unwrap();
         write_tx.open_table(RECORDS_TABLE).unwrap();
         write_tx.open_table(SOURCE_INDEX_TABLE).unwrap();
@@ -491,7 +570,10 @@ mod tests {
 
         assert!(get_record(&db, "r1").unwrap().is_none());
         assert_eq!(get_record(&db, "r2").unwrap().unwrap().id, "r2");
-        assert_eq!(get_record_id_by_source_hash(&db, "sh1").unwrap(), Some("r2".to_string()));
+        assert_eq!(
+            get_record_id_by_source_hash(&db, "sh1").unwrap(),
+            Some("r2".to_string())
+        );
     }
 
     #[test]
@@ -506,7 +588,10 @@ mod tests {
 
         assert_eq!(get_record(&db, "r1").unwrap().unwrap().id, "r1");
         assert!(get_record(&db, "r2").unwrap().is_none());
-        assert_eq!(get_record_id_by_source_hash(&db, "sh1").unwrap(), Some("r1".to_string()));
+        assert_eq!(
+            get_record_id_by_source_hash(&db, "sh1").unwrap(),
+            Some("r1".to_string())
+        );
     }
 
     #[test]

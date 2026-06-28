@@ -1,8 +1,8 @@
+use redb::Database;
 use std::sync::Arc;
 use std::time::Duration;
-use redb::Database;
 use tokio::time;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
 /// Run the expiry sweeper as a background tokio task.
 /// Periodically scans for expired records and announcements and removes them.
@@ -37,7 +37,10 @@ pub fn start_expiry_sweeper(db: Arc<Database>, interval: Duration) -> tokio::tas
                     debug!("Expiry sweeper: no expired announcements");
                 }
                 Err(e) => {
-                    warn!("Expiry sweeper: error removing expired announcements: {}", e);
+                    warn!(
+                        "Expiry sweeper: error removing expired announcements: {}",
+                        e
+                    );
                 }
             }
         }
@@ -59,20 +62,26 @@ pub fn sweep_once(db: &Database) -> Result<(usize, usize), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContentRecord, ScrapeSource, RefreshPolicy, schema};
+    use crate::model::{schema, ContentRecord, RefreshPolicy, ScrapeSource};
     use tempfile::TempDir;
 
     fn open_test_db() -> (TempDir, Database) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("store.redb");
-        let db = Database::builder()
-            .create(&path)
-            .expect("create db");
+        let db = Database::builder().create(&path).expect("create db");
         let write_tx = db.begin_write().unwrap();
-        write_tx.open_table(crate::storage::records::RECORDS_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::SOURCE_INDEX_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::PINS_TABLE).unwrap();
-        write_tx.open_table(crate::storage::records::ANNOUNCEMENTS_TABLE).unwrap();
+        write_tx
+            .open_table(crate::storage::records::RECORDS_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::SOURCE_INDEX_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::PINS_TABLE)
+            .unwrap();
+        write_tx
+            .open_table(crate::storage::records::ANNOUNCEMENTS_TABLE)
+            .unwrap();
         write_tx.commit().unwrap();
         (dir, db)
     }
@@ -101,7 +110,9 @@ mod tests {
 
         let (records, _anns) = sweep_once(&db).unwrap();
         assert_eq!(records, 1);
-        assert!(crate::storage::records::get_record(&db, "r1").unwrap().is_none());
+        assert!(crate::storage::records::get_record(&db, "r1")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -112,6 +123,8 @@ mod tests {
 
         let (records, _) = sweep_once(&db).unwrap();
         assert_eq!(records, 0);
-        assert!(crate::storage::records::get_record(&db, "r1").unwrap().is_some());
+        assert!(crate::storage::records::get_record(&db, "r1")
+            .unwrap()
+            .is_some());
     }
 }

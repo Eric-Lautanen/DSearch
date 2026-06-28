@@ -178,13 +178,9 @@ pub enum PeersAction {
         addr: String,
     },
     /// Ban a peer
-    Ban {
-        peer_id: String,
-    },
+    Ban { peer_id: String },
     /// Unban a peer
-    Unban {
-        peer_id: String,
-    },
+    Unban { peer_id: String },
 }
 
 #[derive(Subcommand)]
@@ -192,17 +188,11 @@ pub enum RoleAction {
     /// List available roles
     List,
     /// Set role
-    Set {
-        role: String,
-    },
+    Set { role: String },
     /// Add a role
-    Add {
-        role: String,
-    },
+    Add { role: String },
     /// Remove a role
-    Remove {
-        role: String,
-    },
+    Remove { role: String },
     /// Auto-detect best role
     Autodetect,
 }
@@ -271,10 +261,7 @@ pub enum ConfigAction {
     /// Show current config
     Show,
     /// Set a config key
-    Set {
-        key: String,
-        value: String,
-    },
+    Set { key: String, value: String },
     /// Reset config to defaults
     Reset,
 }
@@ -284,13 +271,9 @@ pub enum IdentityAction {
     /// Show node identity
     Show,
     /// Export identity to file
-    Export {
-        path: PathBuf,
-    },
+    Export { path: PathBuf },
     /// Import identity from file
-    Import {
-        path: PathBuf,
-    },
+    Import { path: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -340,15 +323,18 @@ pub enum ScraperAction {
 #[derive(Subcommand)]
 pub enum GatewayAction {
     /// Create a new API key
-    KeyCreate {
+    #[command(name = "key-create")]
+    Create {
         /// Nickname for the key
         #[arg(long)]
         nickname: Option<String>,
     },
     /// List API keys
-    KeyList,
+    #[command(name = "key-list")]
+    List,
     /// Revoke an API key
-    KeyRevoke {
+    #[command(name = "key-revoke")]
+    Revoke {
         /// Nickname of the key to revoke
         nickname: String,
     },

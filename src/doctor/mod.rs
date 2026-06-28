@@ -1,11 +1,11 @@
+use serde::Serialize;
+use std::net::UdpSocket;
 /// `dsearch doctor` — full health check.
 ///
 /// Runs a series of checks and produces a human-readable (or JSON) report.
 /// Every check reflects a real underlying test, not a hardcoded pass.
 use std::path::Path;
-use std::net::UdpSocket;
 use std::time::Duration;
-use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DoctorCheck {
@@ -141,7 +141,9 @@ fn check_storage(data_dir: &Path) -> Vec<DoctorCheck> {
                     category: "Storage".to_string(),
                     name: "store.redb opens cleanly".to_string(),
                     status: CheckStatus::Warn,
-                    detail: Some("Database file not yet created — will be created on first use".to_string()),
+                    detail: Some(
+                        "Database file not yet created — will be created on first use".to_string(),
+                    ),
                 });
             } else {
                 checks.push(DoctorCheck {
@@ -160,11 +162,23 @@ fn check_storage(data_dir: &Path) -> Vec<DoctorCheck> {
             let is_current = version == crate::storage::migrations::CURRENT_SCHEMA_VERSION;
             checks.push(DoctorCheck {
                 category: "Storage".to_string(),
-                name: format!("Schema version: {} ({})", version,
-                    if is_current { "current" } else { "outdated" }),
-                status: if is_current { CheckStatus::Ok } else { CheckStatus::Warn },
-                detail: if is_current { None } else {
-                    Some(format!("Current is {}", crate::storage::migrations::CURRENT_SCHEMA_VERSION))
+                name: format!(
+                    "Schema version: {} ({})",
+                    version,
+                    if is_current { "current" } else { "outdated" }
+                ),
+                status: if is_current {
+                    CheckStatus::Ok
+                } else {
+                    CheckStatus::Warn
+                },
+                detail: if is_current {
+                    None
+                } else {
+                    Some(format!(
+                        "Current is {}",
+                        crate::storage::migrations::CURRENT_SCHEMA_VERSION
+                    ))
                 },
             });
         }
@@ -179,21 +193,18 @@ fn check_storage(data_dir: &Path) -> Vec<DoctorCheck> {
     }
 
     // Quota
-    match crate::config::load_config(data_dir) {
-        Ok(config) => {
-            let quota_str = if config.storage.quota_mb == 0 {
-                "unlimited".to_string()
-            } else {
-                format!("{} MB", config.storage.quota_mb)
-            };
-            checks.push(DoctorCheck {
-                category: "Storage".to_string(),
-                name: format!("Quota: {}", quota_str),
-                status: CheckStatus::Ok,
-                detail: None,
-            });
-        }
-        Err(_) => {}
+    if let Ok(config) = crate::config::load_config(data_dir) {
+        let quota_str = if config.storage.quota_mb == 0 {
+            "unlimited".to_string()
+        } else {
+            format!("{} MB", config.storage.quota_mb)
+        };
+        checks.push(DoctorCheck {
+            category: "Storage".to_string(),
+            name: format!("Quota: {}", quota_str),
+            status: CheckStatus::Ok,
+            detail: None,
+        });
     }
 
     checks
@@ -206,7 +217,11 @@ fn check_network(data_dir: &Path) -> Vec<DoctorCheck> {
     let quic_port = match crate::config::load_config(data_dir) {
         Ok(config) => {
             // Parse the gateway.bind to get the port, or use default 7744
-            config.gateway.bind.split(':').last()
+            config
+                .gateway
+                .bind
+                .split(':')
+                .next_back()
                 .and_then(|p| p.parse::<u16>().ok())
                 .unwrap_or(7744)
         }
@@ -353,22 +368,33 @@ fn check_service(data_dir: &Path) -> Vec<DoctorCheck> {
     checks.push(DoctorCheck {
         category: "Service".to_string(),
         name: "Registered for startup".to_string(),
-        status: if registered { CheckStatus::Ok } else { CheckStatus::Warn },
-        detail: if registered { None } else { Some("Not registered — run `dsearch service install`".to_string()) },
+        status: if registered {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
+        detail: if registered {
+            None
+        } else {
+            Some("Not registered — run `dsearch service install`".to_string())
+        },
     });
 
     // Check if currently running
     let port_path = data_dir.join("api.port");
-    let running = port_path.exists() && std::fs::read_to_string(&port_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u16>().ok())
-        .map_or(false, |port| {
-            crate::cli::api_client::api_get(port, "/health").is_ok()
-        });
+    let running = port_path.exists()
+        && std::fs::read_to_string(&port_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u16>().ok())
+            .is_some_and(|port| crate::cli::api_client::api_get(port, "/health").is_ok());
     checks.push(DoctorCheck {
         category: "Service".to_string(),
         name: "Currently running".to_string(),
-        status: if running { CheckStatus::Ok } else { CheckStatus::Warn },
+        status: if running {
+            CheckStatus::Ok
+        } else {
+            CheckStatus::Warn
+        },
         detail: None,
     });
 
@@ -385,10 +411,15 @@ pub fn format_text(checks: &[DoctorCheck]) -> String {
             current_category = check.category.clone();
             output.push_str(&format!("\n  {}\n", current_category));
         }
-        let detail_str = check.detail.as_ref()
+        let detail_str = check
+            .detail
+            .as_ref()
             .map(|d| format!(" ({})", d))
             .unwrap_or_default();
-        output.push_str(&format!("    {} {}{}\n", check.status, check.name, detail_str));
+        output.push_str(&format!(
+            "    {} {}{}\n",
+            check.status, check.name, detail_str
+        ));
     }
 
     output

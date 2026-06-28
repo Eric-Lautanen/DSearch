@@ -52,7 +52,7 @@ pub fn parse_query(input: &str) -> ParsedQuery {
         } else if token.starts_with('-') && token.len() > 1 {
             query.excludes.push(token[1..].to_lowercase());
         } else if token.starts_with('"') && token.ends_with('"') && token.len() > 1 {
-            query.phrases.push(token[1..token.len()-1].to_lowercase());
+            query.phrases.push(token[1..token.len() - 1].to_lowercase());
         } else if let Some((field, value)) = parse_field_filter(token) {
             match field.as_str() {
                 "limit" => {
@@ -125,9 +125,8 @@ fn parse_field_filter(token: &str) -> Option<(String, String)> {
     let value = &token[colon_pos + 1..];
 
     match field {
-        "title" | "tag" | "schema" | "source" | "scraped" | "refresh" | "limit" | "since" | "before" => {
-            Some((field.to_string(), value.to_string()))
-        }
+        "title" | "tag" | "schema" | "source" | "scraped" | "refresh" | "limit" | "since"
+        | "before" => Some((field.to_string(), value.to_string())),
         _ => None,
     }
 }
@@ -165,10 +164,7 @@ fn parse_date_value(value: &str) -> Option<u64> {
 }
 
 /// Check if a record matches a parsed query.
-pub fn matches_query(
-    record: &crate::model::ContentRecord,
-    query: &ParsedQuery,
-) -> bool {
+pub fn matches_query(record: &crate::model::ContentRecord, query: &ParsedQuery) -> bool {
     // Check field filters
     for (field, value) in &query.fields {
         match field.as_str() {
@@ -293,10 +289,11 @@ fn build_searchable_text(record: &crate::model::ContentRecord) -> String {
 /// Extract the host from a URL string without using the `url` crate.
 fn extract_host(url: &str) -> Option<String> {
     // Strip scheme
-    let rest = url.strip_prefix("https://")
+    let rest = url
+        .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     // Find end of host (first / or : or end of string)
-    let end = rest.find(|c: char| c == '/' || c == ':').unwrap_or(rest.len());
+    let end = rest.find(['/', ':']).unwrap_or(rest.len());
     Some(rest[..end].to_string())
 }
 
@@ -360,9 +357,16 @@ pub fn score_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ContentRecord, ScrapeSource, RefreshPolicy};
+    use crate::model::{ContentRecord, RefreshPolicy, ScrapeSource};
 
-    fn make_record(id: &str, source_url: &str, schema: &str, tags: &[&str], body: &str, created_at: u64) -> ContentRecord {
+    fn make_record(
+        id: &str,
+        source_url: &str,
+        schema: &str,
+        tags: &[&str],
+        body: &str,
+        created_at: u64,
+    ) -> ContentRecord {
         ContentRecord {
             id: id.to_string(),
             source_url: source_url.to_string(),
@@ -438,35 +442,70 @@ mod tests {
 
     #[test]
     fn match_simple_terms() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &["category:networking"], "Rust async runtime benchmarks", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &["category:networking"],
+            "Rust async runtime benchmarks",
+            1700000000,
+        );
         let q = parse_query("rust async");
         assert!(matches_query(&record, &q));
     }
 
     #[test]
     fn match_phrase() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &[], "Rust async runtime benchmarks", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Rust async runtime benchmarks",
+            1700000000,
+        );
         let q = parse_query("\"rust async\"");
         assert!(matches_query(&record, &q));
     }
 
     #[test]
     fn match_exclude() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &[], "Rust async runtime benchmarks", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Rust async runtime benchmarks",
+            1700000000,
+        );
         let q = parse_query("rust -async");
         assert!(!matches_query(&record, &q));
     }
 
     #[test]
     fn match_or() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &[], "Only rust here", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Only rust here",
+            1700000000,
+        );
         let q = parse_query("rust OR python");
         assert!(matches_query(&record, &q));
     }
 
     #[test]
     fn match_schema_filter() {
-        let record = make_record("r1", "https://example.com", "rust/crate", &[], "Some content", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "rust/crate",
+            &[],
+            "Some content",
+            1700000000,
+        );
         let q = parse_query("schema:rust/crate");
         assert!(matches_query(&record, &q));
 
@@ -476,7 +515,14 @@ mod tests {
 
     #[test]
     fn match_tag_filter() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &["category:networking"], "Some content", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &["category:networking"],
+            "Some content",
+            1700000000,
+        );
         let q = parse_query("tag:category:networking");
         assert!(matches_query(&record, &q));
 
@@ -486,7 +532,14 @@ mod tests {
 
     #[test]
     fn match_since_filter() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &[], "Some content", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Some content",
+            1700000000,
+        );
         let q = parse_query("since:1700000000");
         assert!(matches_query(&record, &q));
 
@@ -496,7 +549,14 @@ mod tests {
 
     #[test]
     fn match_before_filter() {
-        let record = make_record("r1", "https://example.com", "wiki/article", &[], "Some content", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Some content",
+            1700000000,
+        );
         let q = parse_query("before:1700000001");
         assert!(matches_query(&record, &q));
 
@@ -506,7 +566,14 @@ mod tests {
 
     #[test]
     fn match_scraped_filter() {
-        let mut record = make_record("r1", "https://example.com", "wiki/article", &[], "Some content", 1700000000);
+        let mut record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Some content",
+            1700000000,
+        );
         record.scrape_source = ScrapeSource::Keyword;
         let q = parse_query("scraped:keyword");
         assert!(matches_query(&record, &q));
@@ -517,7 +584,14 @@ mod tests {
 
     #[test]
     fn match_refresh_filter() {
-        let mut record = make_record("r1", "https://example.com", "wiki/article", &[], "Some content", 1700000000);
+        let mut record = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Some content",
+            1700000000,
+        );
         record.refresh_policy = RefreshPolicy::Interval;
         let q = parse_query("refresh:interval");
         assert!(matches_query(&record, &q));
@@ -528,7 +602,14 @@ mod tests {
 
     #[test]
     fn match_source_domain_filter() {
-        let record = make_record("r1", "https://crates.io/crates/tokio", "rust/crate", &[], "Tokio runtime", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://crates.io/crates/tokio",
+            "rust/crate",
+            &[],
+            "Tokio runtime",
+            1700000000,
+        );
         let q = parse_query("source:crates.io");
         assert!(matches_query(&record, &q));
 
@@ -538,15 +619,36 @@ mod tests {
 
     #[test]
     fn combined_query() {
-        let record = make_record("r1", "https://crates.io/crates/tokio", "rust/crate", &["category:networking"], "Tokio async runtime", 1700000000);
+        let record = make_record(
+            "r1",
+            "https://crates.io/crates/tokio",
+            "rust/crate",
+            &["category:networking"],
+            "Tokio async runtime",
+            1700000000,
+        );
         let q = parse_query("tokio schema:rust/crate");
         assert!(matches_query(&record, &q));
     }
 
     #[test]
     fn score_ranking() {
-        let r1 = make_record("rust-guide", "https://example.com", "wiki/article", &["rust"], "A guide to rust programming", 1700000000);
-        let r2 = make_record("other", "https://example.com", "wiki/article", &[], "Unrelated content", 1700000000);
+        let r1 = make_record(
+            "rust-guide",
+            "https://example.com",
+            "wiki/article",
+            &["rust"],
+            "A guide to rust programming",
+            1700000000,
+        );
+        let r2 = make_record(
+            "other",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "Unrelated content",
+            1700000000,
+        );
 
         let q = parse_query("rust");
         let s1 = score_record(&r1, &q, 1);
@@ -561,8 +663,22 @@ mod tests {
             .unwrap_or_default()
             .as_secs();
 
-        let recent = make_record("r1", "https://example.com", "wiki/article", &[], "rust content", now - 100);
-        let old = make_record("r2", "https://example.com", "wiki/article", &[], "rust content", now - 86400 * 365);
+        let recent = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "rust content",
+            now - 100,
+        );
+        let old = make_record(
+            "r2",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "rust content",
+            now - 86400 * 365,
+        );
 
         let q = parse_query("rust");
         let s_recent = score_record(&recent, &q, 1);
@@ -572,7 +688,14 @@ mod tests {
 
     #[test]
     fn score_holder_count() {
-        let r = make_record("r1", "https://example.com", "wiki/article", &[], "rust content", 1700000000);
+        let r = make_record(
+            "r1",
+            "https://example.com",
+            "wiki/article",
+            &[],
+            "rust content",
+            1700000000,
+        );
         let q = parse_query("rust");
         let s1 = score_record(&r, &q, 1);
         let s5 = score_record(&r, &q, 5);
