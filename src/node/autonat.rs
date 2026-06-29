@@ -71,4 +71,32 @@ mod tests {
         // but it should not panic
         let _ = result.is_public;
     }
+
+    #[test]
+    fn test_autonat_probe_result_fields() {
+        // Probe a high ephemeral port that should be bindable
+        let result = probe(0, Duration::from_millis(100));
+        // Port 0 lets the OS pick a free port, so can_bind should succeed
+        // STUN will likely fail in test environments, but the struct should be valid
+        assert!(!result.reason.is_empty());
+    }
+
+    #[test]
+    fn test_autonat_result_public_addr_consistency() {
+        let result = probe(0, Duration::from_millis(100));
+        // If is_public is true, public_addr must be Some
+        if result.is_public {
+            assert!(result.public_addr.is_some());
+        }
+    }
+
+    #[test]
+    fn test_default_stun_servers_not_empty() {
+        let servers = super::super::stun::default_stun_servers();
+        assert!(!servers.is_empty());
+        for server in servers {
+            assert!(!server.is_empty());
+            assert!(server.contains(':'));
+        }
+    }
 }

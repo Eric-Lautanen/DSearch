@@ -198,9 +198,59 @@ mod tests {
     }
 
     #[test]
+    fn test_rand_transaction_id_unique() {
+        let a = rand_transaction_id();
+        let b = rand_transaction_id();
+        // Extremely unlikely to be identical
+        assert_ne!(a, b);
+    }
+
+    #[test]
     fn test_stun_bind_invalid_addr() {
         // Should fail gracefully with an unreachable address
         let result = stun_bind("0.0.0.0:1", Duration::from_millis(100));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_stun_bind_malformed_addr() {
+        let result = stun_bind("not-a-valid-addr", Duration::from_millis(100));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_default_stun_servers_format() {
+        let servers = default_stun_servers();
+        assert!(!servers.is_empty());
+        for server in servers {
+            // Each server should be in host:port format
+            let parts: Vec<&str> = server.rsplitn(2, ':').collect();
+            assert!(parts.len() >= 2, "server '{}' missing port", server);
+        }
+    }
+
+    #[test]
+    fn test_stun_request_format() {
+        // Verify the STUN binding request is well-formed
+        let txn_id = rand_transaction_id();
+        let mut request = [0u8; 20];
+        request[0] = 0x00;
+        request[1] = 0x01; // Binding Request
+        request[2] = 0x00;
+        request[3] = 0x00; // Length = 0
+        request[4] = 0x21;
+        request[5] = 0x12;
+        request[6] = 0xA4;
+        request[7] = 0x42; // Magic cookie
+        request[8..20].copy_from_slice(&txn_id);
+
+        // Verify message type is Binding Request
+        let msg_type = u16::from_be_bytes([request[0], request[1]]);
+        assert_eq!(msg_type, 0x0001);
+        // Verify magic cookie
+        let cookie = u32::from_be_bytes([request[4], request[5], request[6], request[7]]);
+        assert_eq!(cookie, 0x2112A442);
+        // Verify transaction ID is present
+        assert!(request[8..20].iter().any(|&b| b != 0));
     }
 }

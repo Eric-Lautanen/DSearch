@@ -117,3 +117,90 @@ impl HttpResponse {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_response_ok() {
+        let resp = HttpResponse::ok(b"hello".to_vec());
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.status_text, "OK");
+    }
+
+    #[test]
+    fn http_response_json() {
+        let resp = HttpResponse::json(r#"{"key":"value"}"#);
+        assert_eq!(resp.status, 200);
+        assert_eq!(resp.headers.get("content-type").unwrap(), "application/json; charset=utf-8");
+    }
+
+    #[test]
+    fn http_response_not_found() {
+        let resp = HttpResponse::not_found("test error");
+        assert_eq!(resp.status, 404);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("test error"));
+    }
+
+    #[test]
+    fn http_response_bad_request() {
+        let resp = HttpResponse::bad_request("bad input");
+        assert_eq!(resp.status, 400);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("bad input"));
+    }
+
+    #[test]
+    fn http_response_internal_error() {
+        let resp = HttpResponse::internal_error("oops");
+        assert_eq!(resp.status, 500);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("oops"));
+    }
+
+    #[test]
+    fn http_response_method_not_allowed() {
+        let resp = HttpResponse::method_not_allowed("only GET");
+        assert_eq!(resp.status, 405);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("only GET"));
+    }
+
+    #[test]
+    fn http_response_with_node_headers() {
+        let resp = HttpResponse::ok(b"{}".to_vec()).with_node_headers("node-abc");
+        assert_eq!(resp.headers.get("x-node-id").unwrap(), "node-abc");
+        assert_eq!(resp.headers.get("x-protocol-version").unwrap(), "1");
+    }
+
+    #[test]
+    fn http_response_with_record_count() {
+        let resp = HttpResponse::ok(b"{}".to_vec()).with_record_count(42);
+        assert_eq!(resp.headers.get("x-record-count").unwrap(), "42");
+    }
+
+    #[test]
+    fn http_response_to_bytes_format() {
+        let resp = HttpResponse::ok(b"hello".to_vec());
+        let bytes = resp.to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(text.contains("content-length: 5"));
+        assert!(text.contains("connection: close"));
+        assert!(text.contains("server: dsearch"));
+        assert!(text.ends_with("hello"));
+    }
+
+    #[test]
+    fn http_response_to_bytes_no_duplicate_content_length() {
+        let mut resp = HttpResponse::ok(b"test".to_vec());
+        resp.headers.insert("content-length".into(), "999".into());
+        let bytes = resp.to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+        // Should only have one content-length (the computed one)
+        let count = text.matches("content-length").count();
+        assert_eq!(count, 1);
+    }
+}

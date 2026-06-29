@@ -475,5 +475,5 @@ Write-Host "limit: override: OK" -ForegroundColor Green
 Write-Host "JSON output: OK" -ForegroundColor Green
 Write-Host "No results: OK" -ForegroundColor Green
 Write-Host "Combined query: OK" -ForegroundColor Green
-Write-Host "Unit tests (84/84): OK" -ForegroundColor Green
+Write-Host "Unit tests (294/294): OK" -ForegroundColor Green
 Write-Host "`n=== Phase 4 Exit Test Complete ===" -ForegroundColor Cyan

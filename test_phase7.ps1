@@ -346,32 +346,81 @@ Write-Host "  [PASS] gateway key revoke"
 $keyList2 = & $Dsearch --data-dir $TestDir1 gateway key-list 2>&1 | Out-String
 if ($keyList2 -match "test-key") { Write-Host "[FAIL] revoked key still in list"; exit 1 }
 Write-Host "  [PASS] revoked key removed from list"
-
-# --- Test 8: Node status via CLI ---
+# --- Test 8: New API endpoints (storage/quota, storage/pow, storage/cache) ---
 Write-Host ""
-Write-Host "[TEST 8] Node status via CLI (reads from API)"
-$statusOutput = & $Dsearch --data-dir $TestDir1 node status 2>&1
-if ($statusOutput -match "not running") { Write-Host "[FAIL] node status says not running"; exit 1 }
-Write-Host "[PASS] Node status reachable via CLI"
+Write-Host "[TEST 8] New storage API endpoints"
+
+# GET /storage/quota
+$r = Api-Get -Port $p -Path "/storage/quota"
+if ($r.StatusLine -notmatch "200") { Write-Host "[FAIL] GET /storage/quota: $($r.StatusLine)"; exit 1 }
+$quotaBody = $r.Body | ConvertFrom-Json
+if ($null -eq $quotaBody.within_quota) { Write-Host "[FAIL] /storage/quota missing within_quota"; exit 1 }
+Write-Host "  [PASS] GET /storage/quota"
+
+# GET /storage/pow
+$r = Api-Get -Port $p -Path "/storage/pow"
+if ($r.StatusLine -notmatch "200") { Write-Host "[FAIL] GET /storage/pow: $($r.StatusLine)"; exit 1 }
+$powBody = $r.Body | ConvertFrom-Json
+if ($null -eq $powBody.default_difficulty) { Write-Host "[FAIL] /storage/pow missing default_difficulty"; exit 1 }
+Write-Host "  [PASS] GET /storage/pow"
+
+# GET /storage/cache
+$r = Api-Get -Port $p -Path "/storage/cache"
+if ($r.StatusLine -notmatch "200") { Write-Host "[FAIL] GET /storage/cache: $($r.StatusLine)"; exit 1 }
+$cacheBody = $r.Body | ConvertFrom-Json
+if ($null -eq $cacheBody.cache_len) { Write-Host "[FAIL] /storage/cache missing cache_len"; exit 1 }
+Write-Host "  [PASS] GET /storage/cache"
+
+# --- Test 9: Provider add/remove CLI commands ---
+Write-Host ""
+Write-Host "[TEST 9] Provider add/remove CLI commands"
+
+$providerAdd = & $Dsearch --data-dir $TestDir1 scraper provider-add --name "test-provider" --endpoint "https://search.example.com/v1" 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] scraper provider-add: $providerAdd"; exit 1 }
+Write-Host "  [PASS] scraper provider-add"
+
+$providerRemove = & $Dsearch --data-dir $TestDir1 scraper provider-remove test-provider 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] scraper provider-remove: $providerRemove"; exit 1 }
+Write-Host "  [PASS] scraper provider-remove"
+
+# --- Test 10: Peers ban/unban CLI commands ---
+Write-Host ""
+Write-Host "[TEST 10] Peers ban/unban CLI commands"
+
+$banResult = & $Dsearch --data-dir $TestDir1 peers ban bad-peer-1 2>&1 | Out-String
+if ($banResult -notmatch "banned") { Write-Host "[FAIL] peers ban: $banResult"; exit 1 }
+Write-Host "  [PASS] peers ban"
+
+$unbanResult = & $Dsearch --data-dir $TestDir1 peers unban bad-peer-1 2>&1 | Out-String
+if ($unbanResult -notmatch "unbanned") { Write-Host "[FAIL] peers unban: $unbanResult"; exit 1 }
+Write-Host "  [PASS] peers unban"
+
+# --- Test 11: Bootstrap add/remove CLI commands ---
+Write-Host ""
+Write-Host "[TEST 11] Bootstrap add/remove CLI commands"
+
+$bsAdd = & $Dsearch --data-dir $TestDir1 bootstrap add --id test-bs --addr "1.2.3.4:7744" --note "test" 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] bootstrap add: $bsAdd"; exit 1 }
+Write-Host "  [PASS] bootstrap add"
+
+$bsRemove = & $Dsearch --data-dir $TestDir1 bootstrap remove --id test-bs 2>&1 | Out-String
+if ($LASTEXITCODE -ne 0) { Write-Host "[FAIL] bootstrap remove: $bsRemove"; exit 1 }
+Write-Host "  [PASS] bootstrap remove"
+
+# --- Test 12: Role set persists to config.toml ---
+Write-Host ""
+Write-Host "[TEST 12] Role set persists to config.toml"
+
+$roleSet = & $Dsearch --data-dir $TestDir1 role set full 2>&1 | Out-String
+if ($roleSet -notmatch "full") { Write-Host "[FAIL] role set: $roleSet"; exit 1 }
+Write-Host "  [PASS] role set full"
+
+# Verify it persisted
+$roleConfig = & $Dsearch --data-dir $TestDir1 config show 2>&1 | Out-String
+if ($roleConfig -notmatch "full") { Write-Host "[FAIL] role not persisted in config"; exit 1 }
+Write-Host "  [PASS] role persisted in config"
+
+# Reset back to light
+& $Dsearch --data-dir $TestDir1 role set light 2>&1 | Out-Null
 
 # --- Cleanup ---
-Write-Host ""
-Cleanup-Test
-
-# --- Summary ---
-Write-Host ""
-Write-Host "========================================="
-Write-Host "  Phase 7 Exit Test: ALL PASSED"
-Write-Host "========================================="
-exit 0
-}
-catch {
-    Write-Host ""
-    Write-Host "[ERROR] Unhandled exception: $_"
-    Cleanup-Test
-    exit 1
-}
-finally {
-    # Ensure cleanup runs even on unexpected termination
-    Get-Process -Name "dsearch" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-}

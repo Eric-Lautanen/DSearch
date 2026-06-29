@@ -391,6 +391,14 @@ $criticalTests = @(
     "store_dedup_keeps_newer",
     "store_delete_removes_everywhere",
     "store_expiry_sweep",
+    "store_verify_announcement_with_valid_sig",
+    "store_verify_announcement_with_wrong_key",
+    "store_verify_announcement_empty_sig",
+    "store_verify_record_with_signing_key",
+    "store_tier2_limiter_methods",
+    "store_relay_bandwidth_methods",
+    "store_search_cache_methods",
+    "store_pow_check_and_verify",
     "fresh_db_gets_schema_version_set",
     "future_schema_version_rejected"
 )
@@ -420,5 +428,5 @@ Write-Host "Dedup (same source_hash, newer wins): OK" -ForegroundColor Green
 Write-Host "Expiry sweep removes expired: OK" -ForegroundColor Green
 Write-Host "Pin/unpin: OK" -ForegroundColor Green
 Write-Host "Delete: OK" -ForegroundColor Green
-Write-Host "Unit tests (60/60): OK" -ForegroundColor Green
+Write-Host "Unit tests (294/294): OK" -ForegroundColor Green
 Write-Host "`n=== Phase 3 Exit Test Complete ===" -ForegroundColor Cyan

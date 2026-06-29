@@ -60,6 +60,405 @@ fn handle_health(node_id: &str) -> HttpResponse {
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::request::HttpRequest;
+    use tempfile::TempDir;
+
+    fn open_test_store() -> (TempDir, Arc<Store>) {
+        let dir = TempDir::new().unwrap();
+        let db = crate::storage::open_store(dir.path()).unwrap();
+        let config = StorageConfig::default();
+        let store = Arc::new(Store::new(db, config));
+        (dir, store)
+    }
+
+    fn make_request(method: &str, path: &str, query: Vec<(&str, &str)>, body: &str) -> HttpRequest {
+        let mut q = std::collections::HashMap::new();
+        for (k, v) in query {
+            q.insert(k.to_string(), v.to_string());
+        }
+        HttpRequest {
+            method: method.to_string(),
+            path: path.to_string(),
+            query: q,
+            headers: std::collections::HashMap::new(),
+            body: body.to_string(),
+        }
+    }
+
+    #[test]
+    fn test_handle_health() {
+        let resp = handle_health("node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+        assert!(body.contains("node123"));
+    }
+
+    #[test]
+    fn test_handle_node() {
+        let (_dir, store) = open_test_store();
+        let config = DsearchConfig::default();
+        let resp = handle_node("node123", &config, &store);
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("node123"));
+    }
+
+    #[test]
+    fn test_handle_search() {
+        let (_dir, store) = open_test_store();
+        let req = make_request("GET", "/search", vec![("q", "test")], "");
+        let resp = handle_search(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_list_records() {
+        let (_dir, store) = open_test_store();
+        let req = make_request("GET", "/records", vec![], "");
+        let resp = handle_list_records(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_list_schemas() {
+        let resp = handle_list_schemas("node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("wiki/article"));
+    }
+
+    #[test]
+    fn test_handle_get_schema_known() {
+        let resp = handle_get_schema("/schema/wiki/article", "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_get_schema_unknown() {
+        let resp = handle_get_schema("/schema/unknown/schema", "node123");
+        assert_eq!(resp.status, 404);
+    }
+
+    #[test]
+    fn test_handle_storage_info() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_storage_info(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("record_count"));
+    }
+
+    #[test]
+    fn test_handle_storage_quota() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_storage_quota(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("within_quota"));
+    }
+
+    #[test]
+    fn test_handle_storage_pow() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_storage_pow(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("default_difficulty"));
+    }
+
+    #[test]
+    fn test_handle_storage_cache() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_storage_cache(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("cache_len"));
+        assert!(body.contains("tier2_remaining"));
+        assert!(body.contains("relay_remaining"));
+    }
+
+    #[test]
+    fn test_handle_storage_vacuum() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_storage_vacuum(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_sweep() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_sweep(&store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_identity() {
+        let dir = TempDir::new().unwrap();
+        let resp = handle_identity(dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("node_id"));
+    }
+
+    #[test]
+    fn test_handle_bootstrap() {
+        let dir = TempDir::new().unwrap();
+        let resp = handle_bootstrap(dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("peers"));
+    }
+
+    #[test]
+    fn test_handle_list_peers() {
+        let dir = TempDir::new().unwrap();
+        let resp = handle_list_peers(dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_add_peer() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/peers/add", vec![], r#"{"addr":"1.2.3.4:7744"}"#);
+        let resp = handle_add_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_add_peer_missing_addr() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/peers/add", vec![], r#"{}"#);
+        let resp = handle_add_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_ban_peer() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/peers/ban", vec![], r#"{"peer_id":"bad-peer"}"#);
+        let resp = handle_ban_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_ban_peer_missing_id() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/peers/ban", vec![], r#"{}"#);
+        let resp = handle_ban_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_unban_peer() {
+        let dir = TempDir::new().unwrap();
+        // First ban
+        let req = make_request("POST", "/peers/ban", vec![], r#"{"peer_id":"bad-peer"}"#);
+        handle_ban_peer(&req, dir.path(), "node123");
+        // Then unban
+        let req = make_request("POST", "/peers/unban", vec![], r#"{"peer_id":"bad-peer"}"#);
+        let resp = handle_unban_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_unban_peer_missing_id() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/peers/unban", vec![], r#"{}"#);
+        let resp = handle_unban_peer(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_insert_record() {
+        let (_dir, store) = open_test_store();
+        let record_json = r#"{
+            "id": "test-rec-1",
+            "source_url": "https://example.com",
+            "source_hash": "abc123",
+            "schema": "generic/kv",
+            "tags": [],
+            "body": "test body",
+            "created_at": 1000,
+            "expires_at": 9999999999
+        }"#;
+        let req = make_request("POST", "/record/insert", vec![], record_json);
+        let resp = handle_insert_record(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_insert_record_invalid_json() {
+        let (_dir, store) = open_test_store();
+        let req = make_request("POST", "/record/insert", vec![], "not json");
+        let resp = handle_insert_record(&req, &store, "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_pin_record() {
+        let (_dir, store) = open_test_store();
+        // Insert first
+        let mut r = crate::model::ContentRecord {
+            id: "r1".to_string(),
+            source_url: "https://example.com".to_string(),
+            source_hash: "sh1".to_string(),
+            schema: crate::model::schema::GENERIC_KV.to_string(),
+            tags: vec![],
+            body: "test".to_string(),
+            created_at: 1000,
+            expires_at: 9999999999,
+            scrape_source: crate::model::ScrapeSource::Url,
+            refresh_policy: crate::model::RefreshPolicy::Once,
+            sig: "".to_string(),
+        };
+        store.insert_record(&mut r).unwrap();
+
+        let req = make_request("POST", "/record/pin", vec![], r#"{"id":"r1"}"#);
+        let resp = handle_pin_record(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_pin_record_missing_id() {
+        let (_dir, store) = open_test_store();
+        let req = make_request("POST", "/record/pin", vec![], r#"{}"#);
+        let resp = handle_pin_record(&req, &store, "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_unpin_record() {
+        let (_dir, store) = open_test_store();
+        let mut r = crate::model::ContentRecord {
+            id: "r1".to_string(),
+            source_url: "https://example.com".to_string(),
+            source_hash: "sh1".to_string(),
+            schema: crate::model::schema::GENERIC_KV.to_string(),
+            tags: vec![],
+            body: "test".to_string(),
+            created_at: 1000,
+            expires_at: 9999999999,
+            scrape_source: crate::model::ScrapeSource::Url,
+            refresh_policy: crate::model::RefreshPolicy::Once,
+            sig: "".to_string(),
+        };
+        store.insert_record(&mut r).unwrap();
+        store.pin_record("r1").unwrap();
+
+        let req = make_request("POST", "/record/unpin", vec![], r#"{"id":"r1"}"#);
+        let resp = handle_unpin_record(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_delete_record() {
+        let (_dir, store) = open_test_store();
+        let mut r = crate::model::ContentRecord {
+            id: "r1".to_string(),
+            source_url: "https://example.com".to_string(),
+            source_hash: "sh1".to_string(),
+            schema: crate::model::schema::GENERIC_KV.to_string(),
+            tags: vec![],
+            body: "test".to_string(),
+            created_at: 1000,
+            expires_at: 9999999999,
+            scrape_source: crate::model::ScrapeSource::Url,
+            refresh_policy: crate::model::RefreshPolicy::Once,
+            sig: "".to_string(),
+        };
+        store.insert_record(&mut r).unwrap();
+
+        let req = make_request("POST", "/record/delete", vec![], r#"{"id":"r1"}"#);
+        let resp = handle_delete_record(&req, &store, "node123");
+        assert_eq!(resp.status, 200);
+        let body = String::from_utf8_lossy(&resp.body);
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn test_handle_delete_record_missing_id() {
+        let (_dir, store) = open_test_store();
+        let req = make_request("POST", "/record/delete", vec![], r#"{}"#);
+        let resp = handle_delete_record(&req, &store, "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_get_record_found() {
+        let (_dir, store) = open_test_store();
+        let mut r = crate::model::ContentRecord {
+            id: "r1".to_string(),
+            source_url: "https://example.com".to_string(),
+            source_hash: "sh1".to_string(),
+            schema: crate::model::schema::GENERIC_KV.to_string(),
+            tags: vec![],
+            body: "test".to_string(),
+            created_at: 1000,
+            expires_at: 9999999999,
+            scrape_source: crate::model::ScrapeSource::Url,
+            refresh_policy: crate::model::RefreshPolicy::Once,
+            sig: "".to_string(),
+        };
+        store.insert_record(&mut r).unwrap();
+
+        let resp = handle_get_record("/record/r1", &store, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_get_record_not_found() {
+        let (_dir, store) = open_test_store();
+        let resp = handle_get_record("/record/nonexistent", &store, "node123");
+        assert_eq!(resp.status, 404);
+    }
+
+    #[test]
+    fn test_handle_list_scrapers() {
+        let config = DsearchConfig::default();
+        let resp = handle_list_scrapers(&config, "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_get_config() {
+        let dir = TempDir::new().unwrap();
+        let resp = handle_get_config(dir.path(), "node123");
+        assert_eq!(resp.status, 200);
+    }
+
+    #[test]
+    fn test_handle_set_config_missing_key() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/config/set", vec![], r#"{"value":"test"}"#);
+        let resp = handle_set_config(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 400);
+    }
+
+    #[test]
+    fn test_handle_set_config_missing_value() {
+        let dir = TempDir::new().unwrap();
+        let req = make_request("POST", "/config/set", vec![], r#"{"key":"test"}"#);
+        let resp = handle_set_config(&req, dir.path(), "node123");
+        assert_eq!(resp.status, 400);
+    }
+}
+
 fn handle_node(node_id: &str, config: &DsearchConfig, store: &Arc<Store>) -> HttpResponse {
     let record_count = store.record_count().unwrap_or(0);
     let body = serde_json::json!({

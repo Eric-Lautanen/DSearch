@@ -359,8 +359,11 @@ $criticalTests = @(
     "sanitize_strips_zero_width_space",
     "sanitize_strips_bom",
     "sanitize_strips_direction_mark",
+    "validate_body_size_ok",
     "validate_body_size_too_large",
+    "validate_key_size_ok",
     "validate_key_size_too_large",
+    "validate_value_size_ok",
     "validate_value_size_too_large",
     "sanitize_record_full"
 )
@@ -396,5 +399,5 @@ Write-Host "Oversized tag key (>256 B) rejected: OK" -ForegroundColor Green
 Write-Host "Oversized tag value (>64 KB) rejected: OK" -ForegroundColor Green
 Write-Host "Multiple control chars stripped: OK" -ForegroundColor Green
 Write-Host "No panics on malformed input: OK" -ForegroundColor Green
-Write-Host "Unit tests (110/110): OK" -ForegroundColor Green
+Write-Host "Unit tests (294/294): OK" -ForegroundColor Green
 Write-Host "`n=== Phase 6 Exit Test Complete ===" -ForegroundColor Cyan

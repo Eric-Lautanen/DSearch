@@ -316,10 +316,36 @@ mod tests {
     }
 
     #[test]
+    fn test_build_dns_query_labels() {
+        let query = build_dns_query("_dsearch._udp.dsearch.network");
+        // The query should contain the domain labels as DNS-encoded bytes
+        // Label "_dsearch" = 0x08 + "_dsearch"
+        assert!(query.len() > 20);
+        assert_eq!(query[12], 0x08); // length of "_dsearch"
+    }
+
+    #[test]
     fn test_skip_dns_name() {
         let data = b"\x03www\x07example\x03com\x00\x00\x01\x00\x01";
         let offset = skip_dns_name(data, 0).unwrap();
         assert_eq!(offset, 17);
+    }
+
+    #[test]
+    fn test_skip_dns_name_compression_pointer() {
+        let mut data = Vec::new();
+        data.push(0xC0);
+        data.push(0x06);
+        data.extend_from_slice(b"example");
+        let offset = skip_dns_name(&data, 0).unwrap();
+        assert_eq!(offset, 2); // Compression pointer is 2 bytes
+    }
+
+    #[test]
+    fn test_skip_dns_name_past_end() {
+        let data = b"\x05hello"; // Label says 5 bytes but no null terminator
+        let result = skip_dns_name(data, 0);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -354,8 +380,79 @@ mod tests {
     }
 
     #[test]
+    fn test_read_dns_name_single_label() {
+        let data = b"\x04test\x00\x00\x01\x00\x01";
+        let name = read_dns_name(data, 0, data.len()).unwrap();
+        assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn test_parse_dns_srv_response_no_answers() {
+        // Header with ANCOUNT=0
+        let mut data = vec![0u8; 12];
+        data[4] = 0x00; // QDCOUNT = 0
+        data[5] = 0x00;
+        data[6] = 0x00; // ANCOUNT = 0
+        data[7] = 0x00;
+        let result = parse_dns_srv_response(&data);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_dns_srv_response_too_short() {
+        let data = [0u8; 5];
+        let result = parse_dns_srv_response(&data);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_query_dns_srv_invalid_server() {
         let result = query_dns_srv("_dsearch._udp.dsearch.network", "0.0.0.0:1");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_bootstrap_peers_empty_dir() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let peers = resolve_bootstrap_peers(dir.path());
+        // Should at least include compiled defaults
+        assert!(!peers.is_empty());
+    }
+
+    #[test]
+    fn test_write_and_remove_bootstrap_peer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Write a peer
+        write_bootstrap_peer(dir.path(), "test-id", "1.2.3.4:7744", "test note").unwrap();
+        // Read it back
+        let peers = resolve_bootstrap_peers(dir.path());
+        assert!(peers.iter().any(|p| p.id == "test-id"));
+
+        // Remove it
+        let removed = remove_bootstrap_peer(dir.path(), "test-id").unwrap();
+        assert!(removed);
+
+        // Verify it's gone
+        let peers = resolve_bootstrap_peers(dir.path());
+        assert!(!peers.iter().any(|p| p.id == "test-id"));
+    }
+
+    #[test]
+    fn test_remove_nonexistent_peer() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let removed = remove_bootstrap_peer(dir.path(), "no-such-id").unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_bootstrap_toml_use_defaults_false() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let toml_content = "use_defaults = false\n\n[[peers]]\nid = \"custom\"\naddr = \"5.6.7.8:7744\"\nnote = \"custom\"\n";
+        std::fs::write(dir.path().join("bootstrap.toml"), toml_content).unwrap();
+        let peers = resolve_bootstrap_peers(dir.path());
+        // Should only contain the custom peer, not defaults
+        assert!(peers.iter().any(|p| p.id == "custom"));
+        assert_eq!(peers.len(), 1);
     }
 }

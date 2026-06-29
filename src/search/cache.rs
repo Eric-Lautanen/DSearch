@@ -160,4 +160,40 @@ mod tests {
         assert_eq!(cache.get("rust"), Some("new".to_string()));
         assert_eq!(cache.len(), 1);
     }
+
+    #[test]
+    fn cache_len_tracking() {
+        let cache = SearchCache::new(Duration::from_secs(60), 100);
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+        cache.insert("a", "1");
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.is_empty());
+        cache.insert("b", "2");
+        assert_eq!(cache.len(), 2);
+        cache.invalidate("a");
+        assert_eq!(cache.len(), 1);
+        cache.clear();
+        assert_eq!(cache.len(), 0);
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn cache_invalidate_nonexistent_key() {
+        let cache = SearchCache::new(Duration::from_secs(60), 100);
+        cache.insert("a", "1");
+        cache.invalidate("nonexistent");
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("a"), Some("1".to_string()));
+    }
+
+    #[test]
+    fn cache_multiple_inserts_same_key() {
+        let cache = SearchCache::new(Duration::from_secs(60), 100);
+        for i in 0..5 {
+            cache.insert("key", &format!("value{}", i));
+        }
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.get("key"), Some("value4".to_string()));
+    }
 }

@@ -176,4 +176,55 @@ mod tests {
         account.prune_expired();
         assert!(account.is_empty());
     }
+
+    #[test]
+    fn record_without_check() {
+        let account = RelayBandwidthAccount::new(1, Duration::from_secs(1));
+        // record() should track usage without enforcing the limit
+        account.record("peer1", 200_000); // Over the 125_000 limit
+        assert_eq!(account.remaining("peer1"), 0); // No remaining
+    }
+
+    #[test]
+    fn len_tracking() {
+        let account = RelayBandwidthAccount::new(10, Duration::from_secs(60));
+        assert!(account.is_empty());
+        assert_eq!(account.len(), 0);
+        account.allow("peer1", 100);
+        assert_eq!(account.len(), 1);
+        assert!(!account.is_empty());
+        account.allow("peer2", 100);
+        assert_eq!(account.len(), 2);
+    }
+
+    #[test]
+    fn remaining_unknown_peer() {
+        let account = RelayBandwidthAccount::new(1, Duration::from_secs(1));
+        // Unknown peer should return full allowance
+        assert_eq!(account.remaining("unknown"), 125_000);
+    }
+
+    #[test]
+    fn remaining_after_window_reset() {
+        let account = RelayBandwidthAccount::new(1, Duration::from_millis(10));
+        account.allow("peer1", 1_000);
+        // remaining should be reduced
+        let rem = account.remaining("peer1");
+        assert!(rem < 1_250);
+        std::thread::sleep(Duration::from_millis(15));
+        // After window expires, remaining should be back to full
+        assert_eq!(account.remaining("peer1"), 1_250);
+    }
+
+    #[test]
+    fn len_after_prune() {
+        let account = RelayBandwidthAccount::new(10, Duration::from_millis(10));
+        account.allow("peer1", 100);
+        account.allow("peer2", 100);
+        assert_eq!(account.len(), 2);
+        std::thread::sleep(Duration::from_millis(15));
+        account.prune_expired();
+        assert_eq!(account.len(), 0);
+        assert!(account.is_empty());
+    }
 }

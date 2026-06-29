@@ -139,4 +139,46 @@ mod tests {
         limiter.prune_expired();
         assert!(limiter.is_empty());
     }
+
+    #[test]
+    fn len_tracking() {
+        let limiter = Tier2Limiter::new(10, Duration::from_secs(60));
+        assert!(limiter.is_empty());
+        assert_eq!(limiter.len(), 0);
+        limiter.allow("1.1.1.1");
+        assert_eq!(limiter.len(), 1);
+        assert!(!limiter.is_empty());
+        limiter.allow("2.2.2.2");
+        assert_eq!(limiter.len(), 2);
+    }
+
+    #[test]
+    fn remaining_unknown_ip() {
+        let limiter = Tier2Limiter::new(5, Duration::from_secs(60));
+        // Unknown IP should return full allowance
+        assert_eq!(limiter.remaining("unknown"), 5);
+    }
+
+    #[test]
+    fn remaining_after_window_reset() {
+        let limiter = Tier2Limiter::new(5, Duration::from_millis(10));
+        limiter.allow("1.1.1.1");
+        limiter.allow("1.1.1.1");
+        assert_eq!(limiter.remaining("1.1.1.1"), 3);
+        std::thread::sleep(Duration::from_millis(15));
+        // After window expires, remaining should be back to max
+        assert_eq!(limiter.remaining("1.1.1.1"), 5);
+    }
+
+    #[test]
+    fn len_after_prune() {
+        let limiter = Tier2Limiter::new(10, Duration::from_millis(10));
+        limiter.allow("1.1.1.1");
+        limiter.allow("2.2.2.2");
+        assert_eq!(limiter.len(), 2);
+        std::thread::sleep(Duration::from_millis(15));
+        limiter.prune_expired();
+        assert_eq!(limiter.len(), 0);
+        assert!(limiter.is_empty());
+    }
 }

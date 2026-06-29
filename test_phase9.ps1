@@ -181,7 +181,7 @@ if ($missingRepTests.Count -eq 0) {
 Write-Host "`n--- Test 8: Search result cache ---" -ForegroundColor Yellow
 
 $cacheTestResult = & cargo test cache 2>&1 | Out-String
-if ($cacheTestResult -match "cache_hit_within_ttl" -and $cacheTestResult -match "cache_miss_unknown_key" -and $cacheTestResult -match "cache_evicts_on_capacity") {
+if ($cacheTestResult -match "cache_insert_and_get" -and $cacheTestResult -match "cache_expiry" -and $cacheTestResult -match "cache_max_entries_evicts_oldest" -and $cacheTestResult -match "cache_len_tracking") {
     Write-Host "OK - Search cache unit tests pass" -ForegroundColor Green
 } else {
     Write-Host "FAIL - Search cache tests not found" -ForegroundColor Red
@@ -194,7 +194,7 @@ if ($cacheTestResult -match "cache_hit_within_ttl" -and $cacheTestResult -match 
 Write-Host "`n--- Test 9: Tier 2 write-rate limiter ---" -ForegroundColor Yellow
 
 $limiterTestResult = & cargo test tier2_limiter 2>&1 | Out-String
-if ($limiterTestResult -match "allows_writes_within_limit" -and $limiterTestResult -match "different_peers_independent") {
+if ($limiterTestResult -match "allow_within_limit" -and $limiterTestResult -match "different_ips_independent" -and $limiterTestResult -match "len_tracking") {
     Write-Host "OK - Tier 2 rate limiter unit tests pass" -ForegroundColor Green
 } else {
     Write-Host "FAIL - Tier 2 rate limiter tests not found" -ForegroundColor Red
@@ -287,7 +287,7 @@ if ($announceTestResult -match "delay_is_near_half_ttl" -and $announceTestResult
 Write-Host "`n--- Test 14: Relay bandwidth accounting ---" -ForegroundColor Yellow
 
 $relayTestResult = & cargo test relay 2>&1 | Out-String
-if ($relayTestResult -match "record_bytes_adds_up" -and $relayTestResult -match "save_and_load_roundtrip") {
+if ($relayTestResult -match "allow_within_limit" -and $relayTestResult -match "len_tracking" -and $relayTestResult -match "record_without_check") {
     Write-Host "OK - Relay bandwidth accounting unit tests pass" -ForegroundColor Green
 } else {
     Write-Host "FAIL - Relay bandwidth accounting tests not found" -ForegroundColor Red

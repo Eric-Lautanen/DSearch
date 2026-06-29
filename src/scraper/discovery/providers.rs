@@ -119,6 +119,7 @@ pub fn remove_provider(data_dir: &Path, name: &str) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn test_resolve_keyword_to_urls() {
@@ -150,5 +151,71 @@ mod tests {
         let urls = resolve_keyword_to_urls(&providers, "test");
         assert_eq!(urls.len(), 1);
         assert!(urls[0].1.contains("&q=test"));
+    }
+
+    #[test]
+    fn test_add_provider() {
+        let dir = TempDir::new().unwrap();
+        add_provider(dir.path(), "google", "https://google.com/search").unwrap();
+        let providers = load_providers(dir.path());
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "google");
+        assert_eq!(providers[0].endpoint, "https://google.com/search");
+        assert!(providers[0].enabled);
+    }
+
+    #[test]
+    fn test_add_duplicate_provider_rejected() {
+        let dir = TempDir::new().unwrap();
+        add_provider(dir.path(), "google", "https://google.com/search").unwrap();
+        let result = add_provider(dir.path(), "google", "https://google.com/search2");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_provider() {
+        let dir = TempDir::new().unwrap();
+        add_provider(dir.path(), "google", "https://google.com/search").unwrap();
+        add_provider(dir.path(), "bing", "https://bing.com/search").unwrap();
+        assert_eq!(load_providers(dir.path()).len(), 2);
+
+        let removed = remove_provider(dir.path(), "google").unwrap();
+        assert!(removed);
+        let providers = load_providers(dir.path());
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].name, "bing");
+    }
+
+    #[test]
+    fn test_remove_nonexistent_provider() {
+        let dir = TempDir::new().unwrap();
+        let removed = remove_provider(dir.path(), "no-such-provider").unwrap();
+        assert!(!removed);
+    }
+
+    #[test]
+    fn test_load_providers_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let providers = load_providers(dir.path());
+        assert!(providers.is_empty());
+    }
+
+    #[test]
+    fn test_load_providers_disabled_filtered() {
+        let dir = TempDir::new().unwrap();
+        // Write a TOML with a disabled provider
+        let toml_content = "[[providers]]\nname = \"off\"\nenabled = false\nendpoint = \"https://off.example.com\"\n";
+        std::fs::write(dir.path().join("search_providers.toml"), toml_content).unwrap();
+        let providers = load_providers(dir.path());
+        assert!(providers.is_empty());
+    }
+
+    #[test]
+    fn test_add_and_remove_provider_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        add_provider(dir.path(), "ddg", "https://duckduckgo.com").unwrap();
+        assert_eq!(load_providers(dir.path()).len(), 1);
+        remove_provider(dir.path(), "ddg").unwrap();
+        assert!(load_providers(dir.path()).is_empty());
     }
 }

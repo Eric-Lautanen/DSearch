@@ -231,7 +231,6 @@ fn sync_job_states(states: &mut Vec<JobState>, config: &DsearchConfig) {
         }
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,5 +304,138 @@ mod tests {
 
         sync_job_states(&mut states, &config);
         assert!(states.is_empty());
+    }
+
+    #[test]
+    fn test_sync_job_states_updates_existing() {
+        let mut states = vec![JobState {
+            name: "old".to_string(),
+            source: "url".to_string(),
+            target: "https://old.example.com".to_string(),
+            refresh: "once".to_string(),
+            interval_secs: 3600,
+            lifecycle: "ephemeral".to_string(),
+            ttl_secs: 3600,
+            last_run: 0,
+            run_count: 5,
+            completed: true,
+        }];
+
+        let mut config = DsearchConfig::default();
+        config.scraper.jobs.push(crate::model::ScrapeJob {
+            name: "old".to_string(),
+            source: crate::model::ScrapeSource::Url,
+            target: "https://new-target.example.com".to_string(),
+            transform: None,
+            refresh: crate::model::RefreshPolicy::Interval,
+            interval_secs: 1800,
+            lifecycle: crate::model::Lifecycle::Ephemeral,
+            ttl_secs: 7200,
+            max_results: None,
+        });
+
+        sync_job_states(&mut states, &config);
+
+        assert_eq!(states.len(), 1);
+        let state = &states[0];
+        assert_eq!(state.target, "https://new-target.example.com");
+        assert_eq!(state.interval_secs, 1800);
+        assert_eq!(state.ttl_secs, 7200);
+        assert_eq!(state.refresh, "interval");
+        assert_eq!(state.run_count, 5);
+    }
+
+    #[test]
+    fn test_sync_job_states_keyword_source() {
+        let mut states = Vec::new();
+
+        let mut config = DsearchConfig::default();
+        config.scraper.jobs.push(crate::model::ScrapeJob {
+            name: "rust-lang".to_string(),
+            source: crate::model::ScrapeSource::Keyword,
+            target: "/path/to/search_providers.toml".to_string(),
+            transform: None,
+            refresh: crate::model::RefreshPolicy::Interval,
+            interval_secs: 3600,
+            lifecycle: crate::model::Lifecycle::Ephemeral,
+            ttl_secs: 3600,
+            max_results: None,
+        });
+
+        sync_job_states(&mut states, &config);
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].source, "keyword");
+        assert_eq!(states[0].name, "rust-lang");
+    }
+
+    #[test]
+    fn test_sync_job_states_feed_source() {
+        let mut states = Vec::new();
+
+        let mut config = DsearchConfig::default();
+        config.scraper.jobs.push(crate::model::ScrapeJob {
+            name: "blog-feed".to_string(),
+            source: crate::model::ScrapeSource::Feed,
+            target: "https://blog.example.com/feed.xml".to_string(),
+            transform: None,
+            refresh: crate::model::RefreshPolicy::Interval,
+            interval_secs: 1800,
+            lifecycle: crate::model::Lifecycle::Ephemeral,
+            ttl_secs: 3600,
+            max_results: None,
+        });
+
+        sync_job_states(&mut states, &config);
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].source, "feed");
+    }
+
+    #[test]
+    fn test_sync_job_states_api_source() {
+        let mut states = Vec::new();
+
+        let mut config = DsearchConfig::default();
+        config.scraper.jobs.push(crate::model::ScrapeJob {
+            name: "api-source".to_string(),
+            source: crate::model::ScrapeSource::Api,
+            target: "https://api.example.com/v1/data".to_string(),
+            transform: None,
+            refresh: crate::model::RefreshPolicy::Once,
+            interval_secs: 3600,
+            lifecycle: crate::model::Lifecycle::Ephemeral,
+            ttl_secs: 3600,
+            max_results: None,
+        });
+
+        sync_job_states(&mut states, &config);
+
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].source, "api");
+    }
+
+    #[test]
+    fn test_job_state_once_completed() {
+        let state = JobState {
+            name: "once-job".to_string(),
+            source: "url".to_string(),
+            target: "https://example.com".to_string(),
+            refresh: "once".to_string(),
+            interval_secs: 3600,
+            lifecycle: "ephemeral".to_string(),
+            ttl_secs: 3600,
+            last_run: 0,
+            run_count: 1,
+            completed: true,
+        };
+
+        // A completed "once" job should not run again
+        let should_run = match state.refresh.as_str() {
+            "once" => state.run_count == 0,
+            "interval" | "on-change" => true,
+            _ => false,
+        };
+        assert!(!should_run);
     }
 }

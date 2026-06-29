@@ -663,4 +663,206 @@ mod tests {
         // Default config has quota_mb=0, so always allows
         assert!(store.check_quota(1_000_000).is_ok());
     }
+
+    #[test]
+    fn store_verify_announcement_with_valid_sig() {
+        let (_dir, mut store) = open_test_store();
+        let mut rng = rand::rngs::OsRng;
+        let sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+        store.set_signing_key(Arc::new(sk));
+
+        let mut ann = crate::model::Announcement {
+            record_id: "r1".to_string(),
+            source_hash: "s1".to_string(),
+            schema: "kv".to_string(),
+            tags: vec![],
+            holder_addr: "1.2.3.4:7".to_string(),
+            expires_at: 99,
+            sig: String::new(),
+        };
+        store.insert_announcement(&mut ann).unwrap();
+        assert!(!ann.sig.is_empty());
+
+        // Verify with the correct key
+        let result = store.verify_announcement(&ann, &vk);
+        assert!(result.valid, "announcement verification failed: {:?}", result.reason);
+    }
+
+    #[test]
+    fn store_verify_announcement_with_wrong_key() {
+        let (_dir, mut store) = open_test_store();
+        let mut rng = rand::rngs::OsRng;
+        let sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        store.set_signing_key(Arc::new(sk));
+
+        let mut ann = crate::model::Announcement {
+            record_id: "r1".to_string(),
+            source_hash: "s1".to_string(),
+            schema: "kv".to_string(),
+            tags: vec![],
+            holder_addr: "1.2.3.4:7".to_string(),
+            expires_at: 99,
+            sig: String::new(),
+        };
+        store.insert_announcement(&mut ann).unwrap();
+        let wrong_sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        let wrong_vk = wrong_sk.verifying_key();
+        let result = store.verify_announcement(&ann, &wrong_vk);
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn store_verify_announcement_empty_sig() {
+        let (_dir, store) = open_test_store();
+        let ann = crate::model::Announcement {
+            record_id: "rid1".to_string(),
+            source_hash: "sh1".to_string(),
+            schema: schema::WIKI_ARTICLE.to_string(),
+            tags: vec![],
+            holder_addr: "1.2.3.4:7744".to_string(),
+            expires_at: 9999,
+            sig: String::new(),
+        };
+        let mut rng = rand::rngs::OsRng;
+        let vk = ed25519_dalek::SigningKey::generate(&mut rng).verifying_key();
+        let result = store.verify_announcement(&ann, &vk);
+        assert!(!result.valid);
+        assert!(result.reason.unwrap_or_default().contains("invalid signature length"));
+    }
+
+    #[test]
+    fn store_verify_record_with_signing_key() {
+        let (_dir, mut store) = open_test_store();
+        let mut rng = rand::rngs::OsRng;
+        let sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        let vk = sk.verifying_key();
+        store.set_signing_key(Arc::new(sk));
+
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
+        assert!(!r1.sig.is_empty());
+
+        // Verify with the correct key
+        let result = store.verify_record(&r1, &vk);
+        assert!(result.valid, "record verification failed: {:?}", result.reason);
+    }
+
+    #[test]
+    fn store_verify_record_wrong_key() {
+        let (_dir, mut store) = open_test_store();
+        let mut rng = rand::rngs::OsRng;
+        let sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        store.set_signing_key(Arc::new(sk));
+
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
+
+        // Verify with a different key
+        let wrong_sk = ed25519_dalek::SigningKey::generate(&mut rng);
+        let wrong_vk = wrong_sk.verifying_key();
+        let result = store.verify_record(&r1, &wrong_vk);
+        assert!(!result.valid);
+    }
+
+    #[test]
+    fn store_tier2_limiter_methods() {
+        let (_dir, store) = open_test_store();
+        assert!(store.tier2_is_empty());
+        assert_eq!(store.tier2_len(), 0);
+
+        assert!(store.tier2_allow("1.2.3.4"));
+        assert!(!store.tier2_is_empty());
+        assert_eq!(store.tier2_len(), 1);
+
+        let remaining = store.tier2_remaining("1.2.3.4");
+        assert!(remaining > 0);
+
+        let unknown_remaining = store.tier2_remaining("unknown");
+        assert_eq!(unknown_remaining, 100); // max_requests from config
+    }
+
+    #[test]
+    fn store_relay_bandwidth_methods() {
+        let (_dir, store) = open_test_store();
+        assert!(store.relay_is_empty());
+        assert_eq!(store.relay_len(), 0);
+
+        assert!(store.relay_allow("peer1", 1000));
+        assert!(!store.relay_is_empty());
+        assert_eq!(store.relay_len(), 1);
+
+        let remaining = store.relay_remaining("peer1");
+        assert!(remaining > 0);
+
+        store.relay_record("peer1", 500);
+        let remaining_after = store.relay_remaining("peer1");
+        assert!(remaining_after < remaining);
+
+        let unknown_remaining = store.relay_remaining("unknown");
+        assert!(unknown_remaining > 0);
+    }
+
+    #[test]
+    fn store_search_cache_methods() {
+        let (_dir, store) = open_test_store();
+        assert!(store.search_cache_is_empty());
+        assert_eq!(store.search_cache_len(), 0);
+
+        // Insert a record and search to populate cache
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
+        let _ = store.search_records("hello", 10);
+
+        assert!(!store.search_cache_is_empty());
+        assert!(store.search_cache_len() > 0);
+
+        store.invalidate_search_cache("hello:10");
+        store.clear_search_cache();
+        assert!(store.search_cache_is_empty());
+        assert_eq!(store.search_cache_len(), 0);
+    }
+
+    #[test]
+    fn store_pow_check_and_verify() {
+        let (_dir, store) = open_test_store();
+        let difficulty = 8;
+        let solution = store.check_pow(b"test-input", difficulty);
+        assert!(solution.is_some());
+        let sol = solution.unwrap();
+        assert!(store.verify_pow(b"test-input", &sol));
+        assert!(!store.verify_pow(b"wrong-input", &sol));
+    }
+
+    #[test]
+    fn store_prune_tier2_and_relay() {
+        let (_dir, store) = open_test_store();
+        store.tier2_allow("1.2.3.4");
+        store.relay_allow("peer1", 100);
+        assert!(!store.tier2_is_empty());
+        assert!(!store.relay_is_empty());
+        // Prune (won't actually remove since windows haven't expired)
+        store.prune_tier2();
+        store.prune_relay();
+        // Still not empty since windows haven't expired
+        assert!(!store.tier2_is_empty());
+        assert!(!store.relay_is_empty());
+    }
+
+    #[test]
+    fn store_insert_and_get_announcement() {
+        let (_dir, store) = open_test_store();
+        let mut ann = crate::model::Announcement {
+            record_id: "r1".to_string(),
+            source_hash: "s1".to_string(),
+            schema: "kv".to_string(),
+            tags: vec![],
+            holder_addr: "1.2.3.4:7".to_string(),
+            expires_at: 99,
+            sig: String::new(),
+        };
+        store.insert_announcement(&mut ann).unwrap();
+        // Announcement should be stored (no sig since no signing key)
+        assert!(ann.sig.is_empty());
+    }
 }

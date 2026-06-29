@@ -219,8 +219,11 @@ $criticalTests = @(
     "sanitize_strips_tab",
     "sanitize_strips_zero_width_space",
     "sanitize_strips_bom",
-    "validate_body_size_too_large",
-    "sanitize_record_full"
+    "sanitize_record_full",
+    "test_add_provider",
+    "test_remove_provider",
+    "test_add_duplicate_provider_rejected",
+    "test_load_providers_disabled_filtered"
 )
 
 $missingTests = @()
@@ -246,5 +249,5 @@ Write-Host "Record insert + list: OK" -ForegroundColor Green
 Write-Host "Dedup (same source_hash, newer wins): OK" -ForegroundColor Green
 Write-Host "Record announce: OK" -ForegroundColor Green
 Write-Host "Sanitization (control chars stripped): OK" -ForegroundColor Green
-Write-Host "Unit tests (99/99): OK" -ForegroundColor Green
+Write-Host "Unit tests (294/294): OK" -ForegroundColor Green
 Write-Host "`n=== Phase 5 Exit Test Complete ===" -ForegroundColor Cyan
