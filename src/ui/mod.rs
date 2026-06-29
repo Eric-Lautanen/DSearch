@@ -105,7 +105,8 @@ impl DsearchApp {
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("light")
                                 .to_string();
-                            self.status.peers = v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            self.status.peers =
+                                v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             self.status.records =
                                 v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                         }
@@ -114,7 +115,8 @@ impl DsearchApp {
                 "/storage" => {
                     if let Some(b) = body {
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
-                            let size_bytes = v.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let size_bytes =
+                                v.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
                             self.status.tier2_size_mb = size_bytes as f64 / (1024.0 * 1024.0);
                         }
                     }

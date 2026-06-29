@@ -71,8 +71,7 @@ fn resolve_dns_srv(srv_name: &str) -> Vec<BootstrapPeer> {
 
 /// Send a DNS SRV query to a specific DNS server and parse the response.
 fn query_dns_srv(name: &str, server: &str) -> Result<Vec<BootstrapPeer>, String> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("bind: {}", e))?;
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind: {}", e))?;
     socket
         .set_read_timeout(Some(std::time::Duration::from_secs(3)))
         .map_err(|e| format!("set timeout: {}", e))?;
@@ -248,7 +247,6 @@ fn read_dns_name(data: &[u8], mut offset: usize, _end: usize) -> Result<String, 
 
     Ok(name)
 }
-
 
 /// Write a bootstrap.toml with a specific peer entry.
 pub fn write_bootstrap_peer(

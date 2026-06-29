@@ -52,7 +52,7 @@ pub async fn run_feed_job(
             sig: String::new(),
         };
 
-        record = sanitize_record(&mut record)?;
+        record = sanitize_record(&record)?;
         match store.insert_record(&mut record)? {
             crate::storage::records::InsertResult::Inserted => inserted += 1,
             crate::storage::records::InsertResult::ReplacedNewer => replaced += 1,
@@ -62,7 +62,11 @@ pub async fn run_feed_job(
 
     info!(
         "Feed job '{}': {} entries, {} inserted, {} replaced, {} skipped",
-        name, entries.len(), inserted, replaced, skipped
+        name,
+        entries.len(),
+        inserted,
+        replaced,
+        skipped
     );
 
     Ok(FeedScrapeResult {
@@ -213,8 +217,13 @@ fn extract_xml_text(block: &str, tag: &str) -> Option<String> {
 /// Fetch a feed URL using reqwest.
 async fn fetch_feed(url: &str) -> Result<String, String> {
     debug!("Fetching feed: {}", url);
-    let response = reqwest::get(url).await.map_err(|e| format!("fetch feed {}: {}", url, e))?;
-    let body = response.text().await.map_err(|e| format!("read feed response: {}", e))?;
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("fetch feed {}: {}", url, e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("read feed response: {}", e))?;
     Ok(body)
 }
 

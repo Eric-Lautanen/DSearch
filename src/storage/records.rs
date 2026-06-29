@@ -25,8 +25,7 @@ pub fn insert_record(
         .validate_size()
         .map_err(|e| format!("record validation: {}", e))?;
 
-    let json =
-        serde_json::to_string(record).map_err(|e| format!("serialize record: {}", e))?;
+    let json = serde_json::to_string(record).map_err(|e| format!("serialize record: {}", e))?;
 
     let write_tx = db
         .begin_write()
@@ -108,10 +107,7 @@ pub fn insert_record(
             let record_bytes = json.len() as u64;
             if current_bytes + record_bytes > quota_bytes {
                 // Don't commit -- changes in the write tx are discarded
-                return Err(format!(
-                    "Storage quota exceeded ({} MB).",
-                    cfg.quota_mb
-                ));
+                return Err(format!("Storage quota exceeded ({} MB).", cfg.quota_mb));
             }
         }
     }

@@ -318,6 +318,22 @@ pub enum ScraperAction {
         /// Job name
         name: String,
     },
+    /// Add a search provider
+    #[command(name = "provider-add")]
+    ProviderAdd {
+        /// Provider name
+        #[arg(long)]
+        name: String,
+        /// Provider endpoint URL
+        #[arg(long)]
+        endpoint: String,
+    },
+    /// Remove a search provider
+    #[command(name = "provider-remove")]
+    ProviderRemove {
+        /// Provider name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]

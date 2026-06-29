@@ -5,16 +5,24 @@ const INVERTED_INDEX_TABLE: TableDefinition<&str, &str> = TableDefinition::new("
 
 /// Add a record's tags to the inverted index.
 /// Read-modify-write is done in a single write transaction to eliminate the race.
-pub fn index_record(db: &Database, record_id: &str, schema: &str, tags: &[String]) -> Result<(), String> {
+pub fn index_record(
+    db: &Database,
+    record_id: &str,
+    schema: &str,
+    tags: &[String],
+) -> Result<(), String> {
     for tag in tags {
         let (tag_key, tag_value) = parse_tag(tag);
         let index_key = format!("{}\0{}\0{}", schema, tag_key, tag_value);
 
-        let write_tx = db.begin_write().map_err(|e| format!("index write tx: {}", e))?;
+        let write_tx = db
+            .begin_write()
+            .map_err(|e| format!("index write tx: {}", e))?;
 
         // Read existing value within the write transaction
         let existing_ids: Option<Option<String>> = {
-            let table = write_tx.open_table(INVERTED_INDEX_TABLE)
+            let table = write_tx
+                .open_table(INVERTED_INDEX_TABLE)
                 .map_err(|e| format!("open inverted_index: {}", e))?;
             let val = match table.get(&index_key.as_str()) {
                 Ok(Some(guard)) => {
@@ -35,28 +43,36 @@ pub fn index_record(db: &Database, record_id: &str, schema: &str, tags: &[String
         match existing_ids {
             None => {
                 // Already indexed — skip
-                write_tx.commit().map_err(|e| format!("index commit: {}", e))?;
+                write_tx
+                    .commit()
+                    .map_err(|e| format!("index commit: {}", e))?;
                 continue;
             }
             Some(Some(current)) if current.is_empty() => {
                 // No existing entry — insert new
-                let mut table = write_tx.open_table(INVERTED_INDEX_TABLE)
+                let mut table = write_tx
+                    .open_table(INVERTED_INDEX_TABLE)
                     .map_err(|e| format!("reopen inverted_index for write: {}", e))?;
-                table.insert(index_key.as_str(), record_id)
+                table
+                    .insert(index_key.as_str(), record_id)
                     .map_err(|e| format!("write inverted_index: {}", e))?;
             }
             Some(Some(current)) => {
                 // Append to existing entry
                 let ids = format!("{},{}", current, record_id);
-                let mut table = write_tx.open_table(INVERTED_INDEX_TABLE)
+                let mut table = write_tx
+                    .open_table(INVERTED_INDEX_TABLE)
                     .map_err(|e| format!("reopen inverted_index for write: {}", e))?;
-                table.insert(index_key.as_str(), ids.as_str())
+                table
+                    .insert(index_key.as_str(), ids.as_str())
                     .map_err(|e| format!("write inverted_index: {}", e))?;
             }
             Some(None) => unreachable!(),
         }
 
-        write_tx.commit().map_err(|e| format!("index commit: {}", e))?;
+        write_tx
+            .commit()
+            .map_err(|e| format!("index commit: {}", e))?;
     }
 
     Ok(())
@@ -64,15 +80,23 @@ pub fn index_record(db: &Database, record_id: &str, schema: &str, tags: &[String
 
 /// Remove a record from the inverted index.
 /// Read-modify-write is done in a single write transaction to eliminate the race.
-pub fn deindex_record(db: &Database, record_id: &str, schema: &str, tags: &[String]) -> Result<(), String> {
+pub fn deindex_record(
+    db: &Database,
+    record_id: &str,
+    schema: &str,
+    tags: &[String],
+) -> Result<(), String> {
     for tag in tags {
         let (tag_key, tag_value) = parse_tag(tag);
         let index_key = format!("{}\0{}\0{}", schema, tag_key, tag_value);
 
-        let write_tx = db.begin_write().map_err(|e| format!("deindex write tx: {}", e))?;
+        let write_tx = db
+            .begin_write()
+            .map_err(|e| format!("deindex write tx: {}", e))?;
 
         let existing: Option<String> = {
-            let table = write_tx.open_table(INVERTED_INDEX_TABLE)
+            let table = write_tx
+                .open_table(INVERTED_INDEX_TABLE)
                 .map_err(|e| format!("open inverted_index for deindex: {}", e))?;
             let val = match table.get(&index_key.as_str()) {
                 Ok(Some(guard)) => Some(guard.value().to_string()),
@@ -85,19 +109,24 @@ pub fn deindex_record(db: &Database, record_id: &str, schema: &str, tags: &[Stri
 
         if let Some(current) = existing {
             let ids: Vec<&str> = current.split(',').filter(|id| *id != record_id).collect();
-            let mut table = write_tx.open_table(INVERTED_INDEX_TABLE)
+            let mut table = write_tx
+                .open_table(INVERTED_INDEX_TABLE)
                 .map_err(|e| format!("reopen inverted_index for deindex write: {}", e))?;
             if ids.is_empty() {
-                table.remove(&index_key.as_str())
+                table
+                    .remove(&index_key.as_str())
                     .map_err(|e| format!("remove inverted_index entry: {}", e))?;
             } else {
                 let new_val = ids.join(",");
-                table.insert(index_key.as_str(), new_val.as_str())
+                table
+                    .insert(index_key.as_str(), new_val.as_str())
                     .map_err(|e| format!("update inverted_index: {}", e))?;
             }
         }
 
-        write_tx.commit().map_err(|e| format!("deindex commit: {}", e))?;
+        write_tx
+            .commit()
+            .map_err(|e| format!("deindex commit: {}", e))?;
     }
 
     Ok(())
@@ -110,8 +139,11 @@ pub fn search_index(
     tag_key: Option<&str>,
     tag_value: Option<&str>,
 ) -> Result<Vec<String>, String> {
-    let read_tx = db.begin_read().map_err(|e| format!("search read tx: {}", e))?;
-    let table = read_tx.open_table(INVERTED_INDEX_TABLE)
+    let read_tx = db
+        .begin_read()
+        .map_err(|e| format!("search read tx: {}", e))?;
+    let table = read_tx
+        .open_table(INVERTED_INDEX_TABLE)
         .map_err(|e| format!("open inverted_index for search: {}", e))?;
 
     let mut results = Vec::new();
@@ -124,7 +156,8 @@ pub fn search_index(
     };
 
     for entry_result in table.iter().map_err(|e| format!("search iter: {}", e))? {
-        let (key_guard, value_guard) = entry_result.map_err(|e| format!("search read entry: {}", e))?;
+        let (key_guard, value_guard) =
+            entry_result.map_err(|e| format!("search read entry: {}", e))?;
         let key = key_guard.value();
 
         if !key.starts_with(&prefix) {
@@ -159,9 +192,7 @@ mod tests {
     fn open_test_db() -> (TempDir, Database) {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("store.redb");
-        let db = Database::builder()
-            .create(&path)
-            .expect("create db");
+        let db = Database::builder().create(&path).expect("create db");
         let write_tx = db.begin_write().unwrap();
         write_tx.open_table(INVERTED_INDEX_TABLE).unwrap();
         write_tx.commit().unwrap();
@@ -171,11 +202,36 @@ mod tests {
     #[test]
     fn index_and_search_by_schema_and_tag() {
         let (_dir, db) = open_test_db();
-        index_record(&db, "r1", "wiki/article", &["category:networking".to_string(), "level:beginner".to_string()]).unwrap();
-        index_record(&db, "r2", "wiki/article", &["category:networking".to_string(), "level:advanced".to_string()]).unwrap();
-        index_record(&db, "r3", "rust/crate", &["category:networking".to_string()]).unwrap();
+        index_record(
+            &db,
+            "r1",
+            "wiki/article",
+            &[
+                "category:networking".to_string(),
+                "level:beginner".to_string(),
+            ],
+        )
+        .unwrap();
+        index_record(
+            &db,
+            "r2",
+            "wiki/article",
+            &[
+                "category:networking".to_string(),
+                "level:advanced".to_string(),
+            ],
+        )
+        .unwrap();
+        index_record(
+            &db,
+            "r3",
+            "rust/crate",
+            &["category:networking".to_string()],
+        )
+        .unwrap();
 
-        let results = search_index(&db, "wiki/article", Some("category"), Some("networking")).unwrap();
+        let results =
+            search_index(&db, "wiki/article", Some("category"), Some("networking")).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.contains(&"r1".to_string()));
         assert!(results.contains(&"r2".to_string()));
@@ -184,7 +240,8 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results.contains(&"r1".to_string()));
 
-        let results = search_index(&db, "rust/crate", Some("category"), Some("networking")).unwrap();
+        let results =
+            search_index(&db, "rust/crate", Some("category"), Some("networking")).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&"r3".to_string()));
     }
@@ -192,12 +249,31 @@ mod tests {
     #[test]
     fn deindex_removes_record() {
         let (_dir, db) = open_test_db();
-        index_record(&db, "r1", "wiki/article", &["category:networking".to_string()]).unwrap();
-        index_record(&db, "r2", "wiki/article", &["category:networking".to_string()]).unwrap();
+        index_record(
+            &db,
+            "r1",
+            "wiki/article",
+            &["category:networking".to_string()],
+        )
+        .unwrap();
+        index_record(
+            &db,
+            "r2",
+            "wiki/article",
+            &["category:networking".to_string()],
+        )
+        .unwrap();
 
-        deindex_record(&db, "r1", "wiki/article", &["category:networking".to_string()]).unwrap();
+        deindex_record(
+            &db,
+            "r1",
+            "wiki/article",
+            &["category:networking".to_string()],
+        )
+        .unwrap();
 
-        let results = search_index(&db, "wiki/article", Some("category"), Some("networking")).unwrap();
+        let results =
+            search_index(&db, "wiki/article", Some("category"), Some("networking")).unwrap();
         assert_eq!(results.len(), 1);
         assert!(results.contains(&"r2".to_string()));
     }
@@ -212,8 +288,20 @@ mod tests {
     #[test]
     fn search_by_schema_only() {
         let (_dir, db) = open_test_db();
-        index_record(&db, "r1", "wiki/article", &["category:networking".to_string()]).unwrap();
-        index_record(&db, "r2", "wiki/article", &["category:security".to_string()]).unwrap();
+        index_record(
+            &db,
+            "r1",
+            "wiki/article",
+            &["category:networking".to_string()],
+        )
+        .unwrap();
+        index_record(
+            &db,
+            "r2",
+            "wiki/article",
+            &["category:security".to_string()],
+        )
+        .unwrap();
 
         let results = search_index(&db, "wiki/article", None, None).unwrap();
         assert_eq!(results.len(), 2);

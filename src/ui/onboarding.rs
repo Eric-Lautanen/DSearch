@@ -313,7 +313,8 @@ impl OnboardingState {
                     let reachable = std::net::TcpStream::connect_timeout(
                         &addr_display.parse().unwrap_or("0.0.0.0:0".parse().unwrap()),
                         std::time::Duration::from_secs(2),
-                    ).is_ok();
+                    )
+                    .is_ok();
                     let status = if reachable { "✓" } else { "✗" };
                     let color = if reachable {
                         egui::Color32::from_rgb(0x4C, 0xAF, 0x50)
@@ -323,8 +324,12 @@ impl OnboardingState {
                     ui.horizontal(|ui: &mut egui::Ui| {
                         ui.label(egui::RichText::new(status).color(color));
                         ui.label(
-                            egui::RichText::new(format!("{} ({})", &peer.id[..8.min(peer.id.len())], peer.addr))
-                                .small()
+                            egui::RichText::new(format!(
+                                "{} ({})",
+                                &peer.id[..8.min(peer.id.len())],
+                                peer.addr
+                            ))
+                            .small(),
                         );
                     });
                 }
@@ -423,11 +428,9 @@ impl OnboardingState {
             let mut config = crate::config::DsearchConfig::default();
             config.node.role = self.selected_role.clone();
             crate::config::save_config(&self.data_dir, &config).ok();
-        } else {
-            if let Ok(mut config) = crate::config::load_config(&self.data_dir) {
-                config.node.role = self.selected_role.clone();
-                crate::config::save_config(&self.data_dir, &config).ok();
-            }
+        } else if let Ok(mut config) = crate::config::load_config(&self.data_dir) {
+            config.node.role = self.selected_role.clone();
+            crate::config::save_config(&self.data_dir, &config).ok();
         }
     }
 

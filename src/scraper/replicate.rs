@@ -38,10 +38,7 @@ pub async fn handle_replicate_push(
     msg: ReplicatePush,
     store: &Arc<Store>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    debug!(
-        "ReplicatePush: record_id={} from peer",
-        msg.record_id
-    );
+    debug!("ReplicatePush: record_id={} from peer", msg.record_id);
 
     let mut record: ContentRecord = match serde_json::from_str(&msg.record_json) {
         Ok(r) => r,
@@ -63,17 +60,11 @@ pub async fn handle_replicate_push(
 
     let accepted = match store.insert_record(&mut record) {
         Ok(_) => {
-            info!(
-                "ReplicatePush: record {} accepted and stored",
-                record.id
-            );
+            info!("ReplicatePush: record {} accepted and stored", record.id);
             true
         }
         Err(e) => {
-            warn!(
-                "ReplicatePush: record {} rejected: {}",
-                record.id, e
-            );
+            warn!("ReplicatePush: record {} rejected: {}", record.id, e);
             false
         }
     };

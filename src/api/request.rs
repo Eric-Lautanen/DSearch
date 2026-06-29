@@ -235,13 +235,20 @@ mod tests {
     #[test]
     fn reject_oversized_body() {
         let big_body = "x".repeat(1_048_577);
-        let raw = format!("POST /record HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}", big_body.len(), big_body);
+        let raw = format!(
+            "POST /record HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            big_body.len(),
+            big_body
+        );
         assert!(parse_http_request(&raw).is_err());
     }
 
     #[test]
     fn reject_oversized_content_length() {
-        let raw = format!("POST /record HTTP/1.1\r\nContent-Length: {}\r\n\r\n{{}}", 2_000_000);
+        let raw = format!(
+            "POST /record HTTP/1.1\r\nContent-Length: {}\r\n\r\n{{}}",
+            2_000_000
+        );
         assert!(parse_http_request(&raw).is_err());
     }
 

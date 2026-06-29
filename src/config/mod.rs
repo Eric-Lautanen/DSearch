@@ -313,7 +313,11 @@ pub fn save_config(data_dir: &Path, config: &DsearchConfig) -> Result<(), String
 
     // Append [meta] section with config_version
     let version = existing_version.unwrap_or(CURRENT_CONFIG_VERSION);
-    let final_str = format!("{}\n[meta]\nconfig_version = {}\n", toml_str.trim_end(), version);
+    let final_str = format!(
+        "{}\n[meta]\nconfig_version = {}\n",
+        toml_str.trim_end(),
+        version
+    );
 
     std::fs::write(&config_path, final_str)
         .map_err(|e| format!("Failed to write config.toml: {}", e))?;

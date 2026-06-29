@@ -7,8 +7,7 @@ use std::time::Duration;
 ///
 /// Returns (ip, port) of the public address as seen by the STUN server.
 pub fn stun_bind(stun_addr: &str, timeout: Duration) -> Result<String, String> {
-    let socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("bind UDP socket: {}", e))?;
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("bind UDP socket: {}", e))?;
     socket
         .set_read_timeout(Some(timeout))
         .map_err(|e| format!("set read timeout: {}", e))?;
@@ -24,7 +23,7 @@ pub fn stun_bind(stun_addr: &str, timeout: Duration) -> Result<String, String> {
     request[5] = 0x12;
     request[6] = 0xA4;
     request[7] = 0x42; // Magic cookie
-    // Transaction ID: use random bytes
+                       // Transaction ID: use random bytes
     let txn_id: [u8; 12] = rand_transaction_id();
     request[8..20].copy_from_slice(&txn_id);
 
@@ -104,9 +103,8 @@ pub fn stun_bind(stun_addr: &str, timeout: Duration) -> Result<String, String> {
                         // XOR with magic cookie + transaction ID
                         let mask: [u8; 16] = [
                             0x21, 0x12, 0xA4, 0x42, // magic cookie
-                            txn_id[0], txn_id[1], txn_id[2], txn_id[3],
-                            txn_id[4], txn_id[5], txn_id[6], txn_id[7],
-                            txn_id[8], txn_id[9], txn_id[10], txn_id[11],
+                            txn_id[0], txn_id[1], txn_id[2], txn_id[3], txn_id[4], txn_id[5],
+                            txn_id[6], txn_id[7], txn_id[8], txn_id[9], txn_id[10], txn_id[11],
                         ];
                         let mut ip_bytes = [0u8; 16];
                         for i in 0..16 {
@@ -170,9 +168,9 @@ fn rand_transaction_id() -> [u8; 12] {
     id[0..8].copy_from_slice(&nanos.to_le_bytes());
     // Fill remaining bytes with a simple hash
     let mut h = nanos;
-    for i in 8..12 {
+    for byte in id.iter_mut().skip(8) {
         h = h.wrapping_mul(6364136223846793005).wrapping_add(1);
-        id[i] = (h >> 33) as u8;
+        *byte = (h >> 33) as u8;
     }
     id
 }

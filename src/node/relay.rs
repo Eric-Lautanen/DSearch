@@ -94,7 +94,8 @@ impl RelayBandwidthAccount {
             if now >= account.reset_at {
                 self.limit_bytes_per_window
             } else {
-                self.limit_bytes_per_window.saturating_sub(account.bytes_used)
+                self.limit_bytes_per_window
+                    .saturating_sub(account.bytes_used)
             }
         } else {
             self.limit_bytes_per_window

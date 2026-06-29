@@ -25,7 +25,10 @@ pub fn probe(quic_port: u16, timeout: Duration) -> AutoNATResult {
         return AutoNATResult {
             is_public: false,
             public_addr: None,
-            reason: format!("Cannot bind UDP port {} — another process is using it", quic_port),
+            reason: format!(
+                "Cannot bind UDP port {} — another process is using it",
+                quic_port
+            ),
         };
     }
 
@@ -50,7 +53,8 @@ pub fn probe(quic_port: u16, timeout: Duration) -> AutoNATResult {
         None => AutoNATResult {
             is_public: false,
             public_addr: None,
-            reason: "STUN probe failed — node is likely behind NAT without port forwarding".to_string(),
+            reason: "STUN probe failed — node is likely behind NAT without port forwarding"
+                .to_string(),
         },
     }
 }

@@ -193,10 +193,9 @@ async fn cmd_node(
             let db = storage::open_store(data_dir)?;
             let cfg = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-            let store = std::sync::Arc::new(
-                Store::new(db, cfg.storage.clone())
-                    .with_signing_key(std::sync::Arc::new(signing_key.clone()))
-            );
+            let mut store = Store::new(db, cfg.storage.clone());
+            store.set_signing_key(std::sync::Arc::new(signing_key.clone()));
+            let store = std::sync::Arc::new(store);
 
             let mut node = Node::new(
                 signing_key,
@@ -205,6 +204,7 @@ async fn cmd_node(
                 data_dir.clone(),
                 listen_addr,
             );
+            node.store = Some(store.clone());
 
             node.start().await?;
             info!("Node {} started", &node_id[..8]);
@@ -532,7 +532,10 @@ fn cmd_bootstrap(
                 return Ok(());
             }
 
-            println!("Testing connectivity to {} bootstrap peer(s)...", peers.len());
+            println!(
+                "Testing connectivity to {} bootstrap peer(s)...",
+                peers.len()
+            );
             let mut reachable = 0;
             let mut failed = 0;
 
@@ -683,7 +686,10 @@ async fn cmd_peers(
     }
 }
 
-fn cmd_role(action: RoleAction, data_dir: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn cmd_role(
+    action: RoleAction,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
         RoleAction::List => {
             println!("Available roles:");
@@ -709,7 +715,13 @@ fn cmd_role(action: RoleAction, data_dir: &Path) -> Result<(), Box<dyn std::erro
             let mut cfg = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
             // Append role (comma-separated in the role string)
-            let mut roles: Vec<String> = cfg.node.role.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let mut roles: Vec<String> = cfg
+                .node
+                .role
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
             let role_str = r.to_string();
             if !roles.contains(&role_str) {
                 roles.push(role_str.clone());
@@ -728,7 +740,13 @@ fn cmd_role(action: RoleAction, data_dir: &Path) -> Result<(), Box<dyn std::erro
             let mut cfg = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
             let role_str = r.to_string();
-            let mut roles: Vec<String> = cfg.node.role.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != &role_str).collect();
+            let mut roles: Vec<String> = cfg
+                .node
+                .role
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s != &role_str)
+                .collect();
             if roles.is_empty() {
                 roles.push("light".to_string());
             }
@@ -918,26 +936,19 @@ fn cmd_record(
                     if output == "json" {
                         println!("{}", body);
                     } else {
-                        let v: serde_json::Value =
-                            serde_json::from_str(&body).unwrap_or_default();
+                        let v: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
                         if let Some(records) = v.get("records").and_then(|r| r.as_array()) {
                             if records.is_empty() {
                                 println!("No records found.");
                             } else {
                                 println!("Records ({}):", records.len());
                                 for r in records {
-                                    let id =
-                                        r.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("?");
                                     let schema =
                                         r.get("schema").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let created = r
-                                        .get("created_at")
-                                        .and_then(|v| v.as_u64())
-                                        .unwrap_or(0);
-                                    println!(
-                                        "  {}  schema={}  created={}",
-                                        id, schema, created
-                                    );
+                                    let created =
+                                        r.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+                                    println!("  {}  schema={}  created={}", id, schema, created);
                                 }
                             }
                         }
@@ -1089,27 +1100,25 @@ fn cmd_record(
             let records = store.list_records(schema.as_deref(), limit)?;
             if records.is_empty() {
                 println!("No records found.");
+            } else if output == "json" {
+                println!("{}", serde_json::to_string_pretty(&records)?);
             } else {
-                if output == "json" {
-                    println!("{}", serde_json::to_string_pretty(&records)?);
-                } else {
-                    println!("Records ({}):", records.len());
-                    for r in &records {
-                        let pinned = if store.is_pinned(&r.id)? {
-                            " [pinned]"
-                        } else {
-                            ""
-                        };
-                        println!(
-                            "  {}  schema={}  tags=[{}]  created={}  expires={}{}",
-                            r.id,
-                            r.schema,
-                            r.tags.join(","),
-                            r.created_at,
-                            r.expires_at,
-                            pinned
-                        );
-                    }
+                println!("Records ({}):", records.len());
+                for r in &records {
+                    let pinned = if store.is_pinned(&r.id)? {
+                        " [pinned]"
+                    } else {
+                        ""
+                    };
+                    println!(
+                        "  {}  schema={}  tags=[{}]  created={}  expires={}{}",
+                        r.id,
+                        r.schema,
+                        r.tags.join(","),
+                        r.created_at,
+                        r.expires_at,
+                        pinned
+                    );
                 }
             }
             Ok(())
@@ -1297,20 +1306,18 @@ fn cmd_search(
 
     if output == "json" {
         println!("{}", serde_json::to_string_pretty(&results)?);
+    } else if results.is_empty() {
+        println!("No results found.");
     } else {
-        if results.is_empty() {
-            println!("No results found.");
-        } else {
-            println!("Search results ({}):", results.len());
-            for r in &results {
-                let tags = r.tags.join(",");
-                println!(
-                    "  {}  schema={}  tags=[{}]  created={}  source={}",
-                    r.id, r.schema, tags, r.created_at, r.source_url
-                );
-                let snippet: String = r.body.chars().take(120).collect();
-                println!("    {}", snippet);
-            }
+        println!("Search results ({}):", results.len());
+        for r in &results {
+            let tags = r.tags.join(",");
+            println!(
+                "  {}  schema={}  tags=[{}]  created={}  source={}",
+                r.id, r.schema, tags, r.created_at, r.source_url
+            );
+            let snippet: String = r.body.chars().take(120).collect();
+            println!("    {}", snippet);
         }
     }
     Ok(())
@@ -1326,7 +1333,7 @@ fn url_encode(s: &str) -> String {
                 result.push(byte as char);
             }
             b' ' => {
-                result.push_str("+");
+                result.push('+');
             }
             _ => {
                 result.push_str(&format!("%{:02X}", byte));
@@ -1477,6 +1484,21 @@ async fn cmd_scraper(
             }
             Ok(())
         }
+        cli::cmd::ScraperAction::ProviderAdd { name, endpoint } => {
+            match crate::scraper::discovery::providers::add_provider(data_dir, &name, &endpoint) {
+                Ok(()) => println!("Provider '{}' added with endpoint {}", name, endpoint),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+            Ok(())
+        }
+        cli::cmd::ScraperAction::ProviderRemove { name } => {
+            match crate::scraper::discovery::providers::remove_provider(data_dir, &name) {
+                Ok(true) => println!("Provider '{}' removed.", name),
+                Ok(false) => println!("Provider '{}' not found.", name),
+                Err(e) => eprintln!("Error: {}", e),
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1600,7 +1622,10 @@ fn cmd_log(
         LogAction::Tail { level } => {
             let log_path = data_dir.join("dsearch.log");
             if !log_path.exists() {
-                println!("No log file found at {}. Is the node running?", log_path.display());
+                println!(
+                    "No log file found at {}. Is the node running?",
+                    log_path.display()
+                );
                 return Ok(());
             }
 

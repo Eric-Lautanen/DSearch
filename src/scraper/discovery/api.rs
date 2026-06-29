@@ -52,7 +52,7 @@ pub async fn run_api_job(
             sig: String::new(),
         };
 
-        record = sanitize_record(&mut record)?;
+        record = sanitize_record(&record)?;
         match store.insert_record(&mut record)? {
             crate::storage::records::InsertResult::Inserted => inserted += 1,
             crate::storage::records::InsertResult::ReplacedNewer => replaced += 1,
@@ -97,8 +97,8 @@ pub struct ApiScrapeResult {
 /// and a `body` or `content` field. Falls back to serializing the entire object as
 /// the body if no body field is found.
 fn parse_api_response(response: &str) -> Result<Vec<ApiItem>, String> {
-    let value: serde_json::Value = serde_json::from_str(response)
-        .map_err(|e| format!("parse API response: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(response).map_err(|e| format!("parse API response: {}", e))?;
 
     let items = match value {
         serde_json::Value::Array(arr) => arr,
@@ -156,7 +156,12 @@ fn parse_api_response(response: &str) -> Result<Vec<ApiItem>, String> {
 /// Fetch an API endpoint using reqwest.
 async fn fetch_api(url: &str) -> Result<String, String> {
     debug!("Fetching API: {}", url);
-    let response = reqwest::get(url).await.map_err(|e| format!("fetch API {}: {}", url, e))?;
-    let body = response.text().await.map_err(|e| format!("read API response: {}", e))?;
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("fetch API {}: {}", url, e))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|e| format!("read API response: {}", e))?;
     Ok(body)
 }

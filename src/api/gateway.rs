@@ -43,8 +43,7 @@ pub async fn start_gateway_server(
     let key_store = Arc::new(GatewayKeyStore::new(data_dir.clone()));
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
-    tokio::spawn(gateway_server_loop(
-        listener,
+    let ctx = GatewayContext {
         data_dir,
         node_id,
         store,
@@ -52,13 +51,17 @@ pub async fn start_gateway_server(
         rate_limit,
         require_key,
         semaphore,
-    ));
+    };
+    tokio::spawn(gateway_server_loop(listener, ctx));
 
     Ok(())
 }
 
-async fn gateway_server_loop(
-    listener: TcpListener,
+/// Shared context for gateway server loop and connection handling.
+///
+/// Groups the many parameters into a single struct to avoid
+/// too_many_arguments warnings.
+struct GatewayContext {
     data_dir: std::path::PathBuf,
     node_id: String,
     store: Arc<Store>,
@@ -66,29 +69,24 @@ async fn gateway_server_loop(
     rate_limit: u32,
     require_key: bool,
     semaphore: Arc<Semaphore>,
-) {
+}
+
+async fn gateway_server_loop(listener: TcpListener, ctx: GatewayContext) {
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                let data_dir = data_dir.clone();
-                let node_id = node_id.clone();
-                let store = store.clone();
-                let key_store = key_store.clone();
-                let sem = semaphore.clone();
+                let ctx = GatewayContext {
+                    data_dir: ctx.data_dir.clone(),
+                    node_id: ctx.node_id.clone(),
+                    store: ctx.store.clone(),
+                    key_store: ctx.key_store.clone(),
+                    rate_limit: ctx.rate_limit,
+                    require_key: ctx.require_key,
+                    semaphore: ctx.semaphore.clone(),
+                };
                 tokio::spawn(async move {
-                    let _permit = sem.acquire().await;
-                    if let Err(e) = handle_gateway_connection(
-                        stream,
-                        addr,
-                        &data_dir,
-                        &node_id,
-                        &store,
-                        &key_store,
-                        rate_limit,
-                        require_key,
-                    )
-                    .await
-                    {
+                    let _permit = ctx.semaphore.acquire().await;
+                    if let Err(e) = handle_gateway_connection(stream, addr, &ctx).await {
                         warn!("Gateway connection error: {}", e);
                     }
                 });
@@ -103,12 +101,7 @@ async fn gateway_server_loop(
 async fn handle_gateway_connection(
     mut stream: tokio::net::TcpStream,
     peer_addr: SocketAddr,
-    data_dir: &std::path::PathBuf,
-    node_id: &str,
-    store: &Arc<Store>,
-    key_store: &Arc<GatewayKeyStore>,
-    rate_limit: u32,
-    require_key: bool,
+    ctx: &GatewayContext,
 ) -> Result<(), String> {
     let mut buf = vec![0u8; 65536];
     let n = stream
@@ -132,7 +125,7 @@ async fn handle_gateway_connection(
         peer_addr.ip().to_string()
     };
 
-    if !key_store.check_rate_limit(&identifier, rate_limit) {
+    if !ctx.key_store.check_rate_limit(&identifier, ctx.rate_limit) {
         let resp = HttpResponse::new(
             429,
             "Too Many Requests",
@@ -147,7 +140,7 @@ async fn handle_gateway_connection(
     }
 
     // If API key is required and none provided, reject
-    if require_key && api_key.is_none() {
+    if ctx.require_key && api_key.is_none() {
         let resp = HttpResponse::new(
             401,
             "Unauthorized",
@@ -163,7 +156,7 @@ async fn handle_gateway_connection(
 
     // If API key is provided, validate it
     if let Some(ref key) = api_key {
-        if !key_store.validate_key(key) {
+        if !ctx.key_store.validate_key(key) {
             let resp = HttpResponse::new(
                 401,
                 "Unauthorized",
@@ -182,7 +175,7 @@ async fn handle_gateway_connection(
     let resp = if req.method != "GET" {
         HttpResponse::method_not_allowed("gateway is read-only, only GET is allowed")
     } else {
-        gateway_route(&req, data_dir, node_id, store)
+        gateway_route(&req, &ctx.data_dir, &ctx.node_id, &ctx.store)
     };
 
     let bytes = resp.to_bytes();

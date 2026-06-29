@@ -147,11 +147,11 @@ fn parse_date_value(value: &str) -> Option<u64> {
             parts[2].parse::<u32>(),
         ) {
             // Validate month range
-            if m < 1 || m > 12 {
+            if !(1..=12).contains(&m) {
                 return None;
             }
             // Validate day range (simplified — doesn't check per-month max)
-            if d < 1 || d > 31 {
+            if !(1..=31).contains(&d) {
                 return None;
             }
             // Use proper calendar arithmetic via days_from_civil
@@ -217,7 +217,8 @@ pub fn matches_query(record: &crate::model::ContentRecord, query: &ParsedQuery) 
             "title" => {
                 // "title" maps to the record id, source_url, and first line of body
                 let first_line = record.body.lines().next().unwrap_or("");
-                let searchable = format!("{} {} {}", record.id, record.source_url, first_line).to_lowercase();
+                let searchable =
+                    format!("{} {} {}", record.id, record.source_url, first_line).to_lowercase();
                 if !searchable.contains(value) {
                     return false;
                 }

@@ -78,8 +78,8 @@ fn difficulty_to_threshold(difficulty: u8) -> Option<[u8; 32]> {
     let remaining_bits = difficulty % 8;
 
     // First `full_bytes` bytes must be zero
-    for i in 0..full_bytes {
-        threshold[i] = 0x00;
+    for byte in threshold.iter_mut().take(full_bytes) {
+        *byte = 0x00;
     }
 
     // The partial byte: top `remaining_bits` bits must be zero

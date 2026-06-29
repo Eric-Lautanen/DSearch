@@ -38,10 +38,12 @@ impl Tier2Limiter {
         let mut buckets = self.buckets.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
 
-        let bucket = buckets.entry(ip.to_string()).or_insert_with(|| TokenBucket {
-            count: 0,
-            reset_at: now + self.window,
-        });
+        let bucket = buckets
+            .entry(ip.to_string())
+            .or_insert_with(|| TokenBucket {
+                count: 0,
+                reset_at: now + self.window,
+            });
 
         // Reset the bucket if the window has elapsed
         if now >= bucket.reset_at {

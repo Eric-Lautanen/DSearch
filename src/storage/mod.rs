@@ -80,17 +80,25 @@ pub struct Store {
     config: StorageConfig,
     signing_key: Option<Arc<ed25519_dalek::SigningKey>>,
     search_cache: SearchCache,
+    tier2_limiter: crate::storage::tier2_limiter::Tier2Limiter,
+    bandwidth_account: crate::node::relay::RelayBandwidthAccount,
 }
 
 impl Store {
     pub fn new(db: Arc<Database>, config: StorageConfig) -> Self {
         let search_cache = SearchCache::new(Duration::from_secs(30), 256);
-        Self { db, config, signing_key: None, search_cache }
-    }
-
-    pub fn with_signing_key(mut self, key: Arc<ed25519_dalek::SigningKey>) -> Self {
-        self.signing_key = Some(key);
-        self
+        let tier2_limiter =
+            crate::storage::tier2_limiter::Tier2Limiter::new(100, Duration::from_secs(60));
+        let bandwidth_account =
+            crate::node::relay::RelayBandwidthAccount::new(100, Duration::from_secs(1));
+        Self {
+            db,
+            config,
+            signing_key: None,
+            search_cache,
+            tier2_limiter,
+            bandwidth_account,
+        }
     }
 
     pub fn set_signing_key(&mut self, key: Arc<ed25519_dalek::SigningKey>) {
@@ -99,24 +107,34 @@ impl Store {
 
     /// Insert a record with quota check, dedup, and index update.
     /// If a signing key is available, signs the record before storing.
-    pub fn insert_record(&self, record: &mut ContentRecord) -> Result<records::InsertResult, String> {
+    pub fn insert_record(
+        &self,
+        record: &mut ContentRecord,
+    ) -> Result<records::InsertResult, String> {
         // Sign the record if we have a signing key and it's not already signed
         if let Some(ref sk) = self.signing_key {
             if record.sig.is_empty() {
-                let sig = crate::trust::sign::sign_record(
-                    sk,
-                    record.id.as_bytes(),
-                    record.source_url.as_bytes(),
-                    record.source_hash.as_bytes(),
-                    record.schema.as_bytes(),
-                    record.tags.join(",").as_bytes(),
-                    record.body.as_bytes(),
-                    record.created_at.to_string().as_bytes(),
-                    record.expires_at.to_string().as_bytes(),
-                    record.scrape_source.as_str().as_bytes(),
-                    record.refresh_policy.as_str().as_bytes(),
-                );
-                record.sig = sig.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+                let fields = crate::trust::sign::RecordFields {
+                    id: record.id.as_bytes().to_vec(),
+                    source_url: record.source_url.as_bytes().to_vec(),
+                    source_hash: record.source_hash.as_bytes().to_vec(),
+                    schema: record.schema.as_bytes().to_vec(),
+                    tags: record.tags.join(",").into_bytes(),
+                    body: record.body.as_bytes().to_vec(),
+                    created_at: record.created_at.to_string().into_bytes(),
+                    expires_at: record.expires_at.to_string().into_bytes(),
+                    scrape_source: record.scrape_source.as_str().as_bytes().to_vec(),
+                    refresh_policy: record.refresh_policy.as_str().as_bytes().to_vec(),
+                };
+                let sig = crate::trust::sign::sign_record(sk, &fields);
+                // Self-verify the signature we just produced
+                let vk = sk.verifying_key();
+                let sig_bytes = sig.to_bytes();
+                let verified = crate::trust::sign::verify_record_sig(&vk, &fields, &sig);
+                if !verified {
+                    return Err("self-verification of record signature failed".to_string());
+                }
+                record.sig = sig_bytes.iter().map(|b| format!("{:02x}", b)).collect();
             }
         }
 
@@ -180,23 +198,32 @@ impl Store {
     pub fn insert_announcement(&self, ann: &mut crate::model::Announcement) -> Result<(), String> {
         if let Some(ref sk) = self.signing_key {
             if ann.sig.is_empty() {
-                let sig = crate::trust::sign::sign_announcement(
-                    sk,
-                    ann.record_id.as_bytes(),
-                    ann.source_hash.as_bytes(),
-                    ann.schema.as_bytes(),
-                    ann.tags.join(",").as_bytes(),
-                    ann.holder_addr.as_bytes(),
-                    ann.expires_at.to_string().as_bytes(),
-                );
-                ann.sig = sig.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+                let fields = crate::trust::sign::AnnouncementFields {
+                    record_id: ann.record_id.as_bytes().to_vec(),
+                    source_hash: ann.source_hash.as_bytes().to_vec(),
+                    schema: ann.schema.as_bytes().to_vec(),
+                    tags: ann.tags.join(",").into_bytes(),
+                    holder_addr: ann.holder_addr.as_bytes().to_vec(),
+                    expires_at: ann.expires_at.to_string().into_bytes(),
+                };
+                let sig = crate::trust::sign::sign_announcement(sk, &fields);
+                // Self-verify the announcement signature we just produced
+                let vk = sk.verifying_key();
+                let verified = crate::trust::sign::verify_announcement_sig(&vk, &fields, &sig);
+                if !verified {
+                    return Err("self-verification of announcement signature failed".to_string());
+                }
+                ann.sig = sig
+                    .to_bytes()
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect();
             }
         }
         records::insert_announcement(&self.db, ann)
     }
 
-    /// Search the inverted index (only used in tests).
-    #[cfg(test)]
+    /// Search the inverted index for records matching a schema and tag filter.
     pub fn search_index(
         &self,
         schema: &str,
@@ -280,6 +307,176 @@ impl Store {
         interval: std::time::Duration,
     ) -> tokio::task::JoinHandle<()> {
         expiry::start_expiry_sweeper(self.db.clone(), interval)
+    }
+
+    /// Check if a Tier2 announcement request from the given IP is allowed.
+    pub fn tier2_allow(&self, ip: &str) -> bool {
+        self.tier2_limiter.allow(ip)
+    }
+
+    /// Get remaining Tier2 requests for an IP.
+    pub fn tier2_remaining(&self, ip: &str) -> u32 {
+        self.tier2_limiter.remaining(ip)
+    }
+
+    /// Get the number of tracked Tier2 IPs.
+    pub fn tier2_len(&self) -> usize {
+        self.tier2_limiter.len()
+    }
+
+    /// Check if a relay request from the given peer is within bandwidth limits.
+    pub fn relay_allow(&self, peer_id: &str, bytes: u64) -> bool {
+        self.bandwidth_account.allow(peer_id, bytes)
+    }
+
+    /// Record relay bandwidth for a peer without checking the limit.
+    pub fn relay_record(&self, peer_id: &str, bytes: u64) {
+        self.bandwidth_account.record(peer_id, bytes)
+    }
+
+    /// Get remaining relay bandwidth for a peer.
+    pub fn relay_remaining(&self, peer_id: &str) -> u64 {
+        self.bandwidth_account.remaining(peer_id)
+    }
+
+    /// Get the number of tracked relay peers.
+    pub fn relay_len(&self) -> usize {
+        self.bandwidth_account.len()
+    }
+
+    /// Get the number of entries in the search cache.
+    pub fn search_cache_len(&self) -> usize {
+        self.search_cache.len()
+    }
+
+    /// Check if the search cache is empty.
+    pub fn search_cache_is_empty(&self) -> bool {
+        self.search_cache.is_empty()
+    }
+
+    /// Check if no Tier2 IPs are tracked.
+    pub fn tier2_is_empty(&self) -> bool {
+        self.tier2_limiter.is_empty()
+    }
+
+    /// Check if no relay peers are tracked.
+    pub fn relay_is_empty(&self) -> bool {
+        self.bandwidth_account.is_empty()
+    }
+
+    /// Verify a record's signature using the trust::verify module.
+    pub fn verify_record(
+        &self,
+        record: &ContentRecord,
+        verifying_key: &ed25519_dalek::VerifyingKey,
+    ) -> crate::trust::verify::VerifyResult {
+        let sig_bytes: Vec<u8> = (0..record.sig.len())
+            .step_by(2)
+            .filter_map(|i| {
+                u8::from_str_radix(&record.sig[i..i + 2.min(record.sig.len() - i)], 16).ok()
+            })
+            .collect();
+        if sig_bytes.len() != 64 {
+            return crate::trust::verify::VerifyResult::fail("invalid signature length");
+        }
+        let sig_array: [u8; 64] = sig_bytes.try_into().unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+        let fields = crate::trust::sign::RecordFields {
+            id: record.id.as_bytes().to_vec(),
+            source_url: record.source_url.as_bytes().to_vec(),
+            source_hash: record.source_hash.as_bytes().to_vec(),
+            schema: record.schema.as_bytes().to_vec(),
+            tags: record.tags.join(",").into_bytes(),
+            body: record.body.as_bytes().to_vec(),
+            created_at: record.created_at.to_string().into_bytes(),
+            expires_at: record.expires_at.to_string().into_bytes(),
+            scrape_source: record.scrape_source.as_str().as_bytes().to_vec(),
+            refresh_policy: record.refresh_policy.as_str().as_bytes().to_vec(),
+        };
+        crate::trust::verify::verify_record_signature(verifying_key, &fields, &sig)
+    }
+
+    /// Verify an announcement's signature using the trust::verify module.
+    pub fn verify_announcement(
+        &self,
+        ann: &crate::model::Announcement,
+        verifying_key: &ed25519_dalek::VerifyingKey,
+    ) -> crate::trust::verify::VerifyResult {
+        let sig_bytes: Vec<u8> = (0..ann.sig.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&ann.sig[i..i + 2.min(ann.sig.len() - i)], 16).ok())
+            .collect();
+        if sig_bytes.len() != 64 {
+            return crate::trust::verify::VerifyResult::fail("invalid signature length");
+        }
+        let sig_array: [u8; 64] = sig_bytes.try_into().unwrap();
+        let sig = ed25519_dalek::Signature::from_bytes(&sig_array);
+        let fields = crate::trust::sign::AnnouncementFields {
+            record_id: ann.record_id.as_bytes().to_vec(),
+            source_hash: ann.source_hash.as_bytes().to_vec(),
+            schema: ann.schema.as_bytes().to_vec(),
+            tags: ann.tags.join(",").into_bytes(),
+            holder_addr: ann.holder_addr.as_bytes().to_vec(),
+            expires_at: ann.expires_at.to_string().into_bytes(),
+        };
+        crate::trust::verify::verify_announcement_signature(verifying_key, &fields, &sig)
+    }
+
+    /// Verify a record's ID matches the Blake3 hash of its content fields.
+    pub fn verify_record_id(&self, record: &ContentRecord) -> crate::trust::verify::VerifyResult {
+        crate::trust::verify::verify_record_id(
+            &record.id,
+            record.source_url.as_bytes(),
+            record.source_hash.as_bytes(),
+            record.schema.as_bytes(),
+            record.tags.join(",").as_bytes(),
+            record.body.as_bytes(),
+            record.created_at.to_string().as_bytes(),
+        )
+    }
+
+    /// Check PoW difficulty for a given input.
+    pub fn check_pow(
+        &self,
+        input: &[u8],
+        difficulty: u8,
+    ) -> Option<crate::trust::pow::PowSolution> {
+        crate::trust::pow::mine_pow(input, difficulty)
+    }
+
+    /// Verify a PoW solution.
+    pub fn verify_pow(&self, input: &[u8], solution: &crate::trust::pow::PowSolution) -> bool {
+        crate::trust::pow::verify_pow(input, solution)
+    }
+
+    /// Apply a named transform to scraped content.
+    pub fn apply_transform(&self, name: &str, input: &str) -> Result<String, String> {
+        crate::scraper::sandbox::apply_transform(name, input)
+    }
+
+    /// Check storage quota.
+    pub fn check_quota(&self, additional_bytes: u64) -> Result<(), String> {
+        quota::check_quota(&self.db, &self.config, additional_bytes)
+    }
+
+    /// Prune expired Tier2 rate limit buckets.
+    pub fn prune_tier2(&self) {
+        self.tier2_limiter.prune_expired();
+    }
+
+    /// Prune expired relay bandwidth accounts.
+    pub fn prune_relay(&self) {
+        self.bandwidth_account.prune_expired();
+    }
+
+    /// Invalidate a search cache entry.
+    pub fn invalidate_search_cache(&self, key: &str) {
+        self.search_cache.invalidate(key);
+    }
+
+    /// Clear the search cache.
+    pub fn clear_search_cache(&self) {
+        self.search_cache.clear();
     }
 }
 
@@ -410,5 +607,60 @@ mod tests {
         let results = store.search_records("async", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "r2");
+    }
+
+    #[test]
+    fn store_tier2_limiter() {
+        let (_dir, store) = open_test_store();
+        assert!(store.tier2_allow("1.2.3.4"));
+        assert!(store.tier2_allow("1.2.3.4"));
+    }
+
+    #[test]
+    fn store_relay_bandwidth() {
+        let (_dir, store) = open_test_store();
+        assert!(store.relay_allow("peer1", 1000));
+    }
+
+    #[test]
+    fn store_apply_transform() {
+        let (_dir, store) = open_test_store();
+        assert_eq!(
+            store.apply_transform("lowercase", "HELLO").unwrap(),
+            "hello"
+        );
+        assert_eq!(
+            store.apply_transform("strip_html", "<b>bold</b>").unwrap(),
+            "bold"
+        );
+    }
+
+    #[test]
+    fn store_verify_record_id() {
+        let (_dir, store) = open_test_store();
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        // Compute the expected record_id
+        let expected_id = crate::trust::sign::compute_record_id(
+            r1.source_url.as_bytes(),
+            r1.source_hash.as_bytes(),
+            r1.schema.as_bytes(),
+            r1.tags.join(",").as_bytes(),
+            r1.body.as_bytes(),
+            r1.created_at.to_string().as_bytes(),
+        );
+        r1.id = expected_id.clone();
+        let result = store.verify_record_id(&r1);
+        assert!(
+            result.valid,
+            "record ID verification failed: {:?}",
+            result.reason
+        );
+    }
+
+    #[test]
+    fn store_check_quota() {
+        let (_dir, store) = open_test_store();
+        // Default config has quota_mb=0, so always allows
+        assert!(store.check_quota(1_000_000).is_ok());
     }
 }

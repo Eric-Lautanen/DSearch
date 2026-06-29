@@ -16,7 +16,10 @@ pub async fn handle_announce(
     msg: Announce,
     store: &Arc<Store>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    debug!("Announce: record_id={} holder={}", msg.record_id, msg.holder_addr);
+    debug!(
+        "Announce: record_id={} holder={}",
+        msg.record_id, msg.holder_addr
+    );
 
     let mut ann = Announcement {
         record_id: msg.record_id.clone(),

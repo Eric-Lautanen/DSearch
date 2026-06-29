@@ -48,7 +48,7 @@ pub async fn run_url_job(
         sig: "".to_string(),
     };
 
-    record = sanitize_record(&mut record)?;
+    record = sanitize_record(&record)?;
     let result = store.insert_record(&mut record)?;
 
     Ok(ScrapeResult {

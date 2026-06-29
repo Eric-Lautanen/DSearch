@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Instant;
 
@@ -36,20 +36,14 @@ impl AsyncApi {
         let (resp_tx, resp_rx) = mpsc::channel::<ApiResponse>();
 
         std::thread::spawn(move || {
-            loop {
-                match req_rx.recv() {
-                    Ok(req) => {
-                        let body =
-                            crate::cli::api_client::api_get_from_dir(&req.data_dir, &req.path);
-                        let resp = ApiResponse {
-                            path: req.path,
-                            body,
-                        };
-                        if resp_tx.send(resp).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(req) = req_rx.recv() {
+                let body = crate::cli::api_client::api_get_from_dir(&req.data_dir, &req.path);
+                let resp = ApiResponse {
+                    path: req.path,
+                    body,
+                };
+                if resp_tx.send(resp).is_err() {
+                    break;
                 }
             }
         });
@@ -66,7 +60,7 @@ impl AsyncApi {
     /// Request an API call only if one isn't already pending and
     /// the minimum interval since the last request for this path
     /// has elapsed.
-    pub fn ensure_requested(&mut self, path: &str, data_dir: &PathBuf) {
+    pub fn ensure_requested(&mut self, path: &str, data_dir: &Path) {
         if self.pending.contains(path) {
             return;
         }
@@ -77,7 +71,7 @@ impl AsyncApi {
         }
         let req = ApiRequest {
             path: path.to_string(),
-            data_dir: data_dir.clone(),
+            data_dir: data_dir.to_path_buf(),
         };
         if self.req_tx.send(req).is_ok() {
             self.pending.insert(path.to_string());

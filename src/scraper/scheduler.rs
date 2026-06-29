@@ -43,10 +43,7 @@ async fn run_scheduler_loop(
         })
         .collect();
 
-    info!(
-        "Scraper scheduler started with {} job(s)",
-        job_states.len()
-    );
+    info!("Scraper scheduler started with {} job(s)", job_states.len());
 
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -68,9 +65,7 @@ async fn run_scheduler_loop(
 
             let should_run = match job.refresh.as_str() {
                 "once" => job.run_count == 0,
-                "interval" | "on-change" => {
-                    now >= job.last_run + job.interval_secs
-                }
+                "interval" | "on-change" => now >= job.last_run + job.interval_secs,
                 _ => false,
             };
 
@@ -135,7 +130,10 @@ async fn run_job(store: &Store, job: &JobState) -> Result<String, String> {
                 job.ttl_secs,
             )
             .await?;
-            Ok(format!("{} entries ({} inserted)", result.total, result.inserted))
+            Ok(format!(
+                "{}: {} entries, {} inserted, {} replaced, {} skipped",
+                result.job_name, result.total, result.inserted, result.replaced, result.skipped
+            ))
         }
         "api" => {
             let result = crate::scraper::discovery::api::run_api_job(
@@ -145,7 +143,53 @@ async fn run_job(store: &Store, job: &JobState) -> Result<String, String> {
                 job.ttl_secs,
             )
             .await?;
-            Ok(format!("{} items ({} inserted)", result.total, result.inserted))
+            Ok(format!(
+                "{}: {} items, {} inserted, {} replaced, {} skipped",
+                result.job_name, result.total, result.inserted, result.replaced, result.skipped
+            ))
+        }
+        "keyword" => {
+            // Keyword discovery: resolve keyword to URLs via search providers, then scrape each
+            let providers = crate::scraper::discovery::providers::load_providers(
+                &std::path::PathBuf::from(&job.target),
+            );
+            let urls = crate::scraper::discovery::providers::resolve_keyword_to_urls(
+                &providers, &job.name,
+            );
+            if urls.is_empty() {
+                return Err(format!(
+                    "No search providers found for keyword '{}'",
+                    job.name
+                ));
+            }
+            let mut total_inserted = 0usize;
+            for (provider_name, url) in &urls {
+                match crate::scraper::job::run_url_job(
+                    store,
+                    provider_name,
+                    url,
+                    &job.lifecycle,
+                    job.ttl_secs,
+                )
+                .await
+                {
+                    Ok(r) => total_inserted += if r.inserted { 1 } else { 0 },
+                    Err(e) => {
+                        tracing::warn!(
+                            "Keyword scrape '{}' from {} failed: {}",
+                            job.name,
+                            provider_name,
+                            e
+                        );
+                    }
+                }
+            }
+            Ok(format!(
+                "keyword '{}': {} URLs scraped, {} inserted",
+                job.name,
+                urls.len(),
+                total_inserted
+            ))
         }
         _ => Err(format!("Unknown source type: {}", job.source)),
     }
@@ -236,7 +280,10 @@ mod tests {
         assert_eq!(states.len(), 2);
         assert!(states.iter().any(|s| s.name == "new"));
         // Old job should keep its run_count
-        assert_eq!(states.iter().find(|s| s.name == "old").unwrap().run_count, 1);
+        assert_eq!(
+            states.iter().find(|s| s.name == "old").unwrap().run_count,
+            1
+        );
     }
 
     #[test]

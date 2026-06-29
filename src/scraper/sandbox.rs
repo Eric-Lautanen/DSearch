@@ -1,12 +1,12 @@
-/// Sandboxed execution environment for scraper transforms.
-///
-/// Transforms are user-defined functions that modify scraped content
-/// before it's stored. Since transforms run arbitrary logic, they
-/// need to be sandboxed to prevent malicious code from affecting
-/// the host system.
-///
-/// Phase 1: Simple string-based transforms (no code execution).
-/// Future: WASM-based sandbox for arbitrary transforms.
+//! Sandboxed execution environment for scraper transforms.
+//!
+//! Transforms are user-defined functions that modify scraped content
+//! before it's stored. Since transforms run arbitrary logic, they
+//! need to be sandboxed to prevent malicious code from affecting
+//! the host system.
+//!
+//! Phase 1: Simple string-based transforms (no code execution).
+//! Future: WASM-based sandbox for arbitrary transforms.
 
 /// Apply a named transform to a string.
 ///
@@ -29,28 +29,29 @@ pub fn apply_transform(name: &str, input: &str) -> Result<String, String> {
 }
 
 /// Strip HTML tags from a string, leaving only text content.
+/// Also decodes common HTML entities found in the text.
 fn strip_html_tags(input: &str) -> String {
-    let mut result = String::with_capacity(input.len());
+    let mut text = String::with_capacity(input.len());
     let mut in_tag = false;
 
     for ch in input.chars() {
         match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
-            _ if !in_tag => result.push(ch),
+            _ if !in_tag => text.push(ch),
             _ => {}
         }
     }
 
     // Decode common HTML entities (order matters: & must be last)
-    result = result.replace("&nbsp;", " ");
-    result = result.replace("<", "<");
-    result = result.replace(">", ">");
-    result = result.replace("\u{201C}", "\"");
-    result = result.replace("\u{201D}", "\"");
-    result = result.replace("&#39;", "'");
-    result = result.replace("&", "&");
-    result
+    text = text.replace("&nbsp;", " ");
+    text = text.replace("&lt;", "<");
+    text = text.replace("&gt;", ">");
+    text = text.replace("\u{201c}", "\"");
+    text = text.replace("\u{201d}", "\"");
+    text = text.replace("&#39;", "'");
+    text = text.replace("&amp;", "&");
+    text
 }
 
 /// Normalize whitespace: collapse runs of whitespace into single spaces.
@@ -75,8 +76,8 @@ fn normalize_whitespace(input: &str) -> String {
 
 /// Try to extract meaningful text from a JSON response.
 fn json_extract(input: &str) -> Result<String, String> {
-    let value: serde_json::Value = serde_json::from_str(input)
-        .map_err(|e| format!("json_extract: not valid JSON: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_str(input).map_err(|e| format!("json_extract: not valid JSON: {}", e))?;
 
     // Try common field names for the main content
     for field in &["body", "content", "text", "description", "summary", "value"] {
@@ -117,10 +118,16 @@ mod tests {
 
     #[test]
     fn strip_html_entities() {
-        // HTML entities are decoded after tag stripping
         let input = "a & b <em>bold</em> c";
         assert_eq!(strip_html_tags(input), "a & b bold c");
     }
+
+    #[test]
+    fn strip_html_lt_gt_entities() {
+        let input = "a &lt; b &gt; c";
+        assert_eq!(strip_html_tags(input), "a < b > c");
+    }
+
     #[test]
     fn normalize_whitespace_collapses() {
         let input = "hello   \n\t  world";

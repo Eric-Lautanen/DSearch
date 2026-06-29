@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 
 /// Canonical encoding: fields concatenated in struct-declaration order,
 /// each length-prefixed (u32 BE), UTF-8 for strings.
@@ -11,79 +11,92 @@ pub fn canonical_encode_fields(fields: &[&[u8]]) -> Vec<u8> {
     buf
 }
 
+/// Fields of a ContentRecord, used for signing and verification.
+/// Groups the many record fields into a struct to avoid too_many_arguments.
+/// Owns its data so it can outlive the temporary strings it's built from.
+#[derive(Clone)]
+pub struct RecordFields {
+    pub id: Vec<u8>,
+    pub source_url: Vec<u8>,
+    pub source_hash: Vec<u8>,
+    pub schema: Vec<u8>,
+    pub tags: Vec<u8>,
+    pub body: Vec<u8>,
+    pub created_at: Vec<u8>,
+    pub expires_at: Vec<u8>,
+    pub scrape_source: Vec<u8>,
+    pub refresh_policy: Vec<u8>,
+}
+
+impl RecordFields {
+    fn encode(&self) -> Vec<u8> {
+        canonical_encode_fields(&[
+            &self.id,
+            &self.source_url,
+            &self.source_hash,
+            &self.schema,
+            &self.tags,
+            &self.body,
+            &self.created_at,
+            &self.expires_at,
+            &self.scrape_source,
+            &self.refresh_policy,
+        ])
+    }
+}
+
+/// Fields of an Announcement, used for signing and verification.
+/// Groups the announcement fields into a struct to avoid too_many_arguments.
+/// Owns its data so it can outlive the temporary strings it's built from.
+#[derive(Clone)]
+pub struct AnnouncementFields {
+    pub record_id: Vec<u8>,
+    pub source_hash: Vec<u8>,
+    pub schema: Vec<u8>,
+    pub tags: Vec<u8>,
+    pub holder_addr: Vec<u8>,
+    pub expires_at: Vec<u8>,
+}
+
+impl AnnouncementFields {
+    fn encode(&self) -> Vec<u8> {
+        canonical_encode_fields(&[
+            &self.record_id,
+            &self.source_hash,
+            &self.schema,
+            &self.tags,
+            &self.holder_addr,
+            &self.expires_at,
+        ])
+    }
+}
+
 /// Sign a ContentRecord. Covers all fields except `sig`.
-/// sign(id, source_url, source_hash, schema, tags, body, created_at, expires_at,
-///      scrape_source, refresh_policy)
-pub fn sign_record(
-    signing_key: &SigningKey,
-    id: &[u8],
-    source_url: &[u8],
-    source_hash: &[u8],
-    schema: &[u8],
-    tags: &[u8],
-    body: &[u8],
-    created_at: &[u8],
-    expires_at: &[u8],
-    scrape_source: &[u8],
-    refresh_policy: &[u8],
-) -> Signature {
-    let encoded = canonical_encode_fields(&[
-        id, source_url, source_hash, schema, tags, body,
-        created_at, expires_at, scrape_source, refresh_policy,
-    ]);
-    signing_key.sign(&encoded)
+pub fn sign_record(signing_key: &SigningKey, fields: &RecordFields) -> Signature {
+    signing_key.sign(&fields.encode())
 }
 
 /// Verify a ContentRecord signature.
 pub fn verify_record_sig(
     verifying_key: &VerifyingKey,
-    id: &[u8],
-    source_url: &[u8],
-    source_hash: &[u8],
-    schema: &[u8],
-    tags: &[u8],
-    body: &[u8],
-    created_at: &[u8],
-    expires_at: &[u8],
-    scrape_source: &[u8],
-    refresh_policy: &[u8],
+    fields: &RecordFields,
     sig: &Signature,
 ) -> bool {
-    let encoded = canonical_encode_fields(&[
-        id, source_url, source_hash, schema, tags, body,
-        created_at, expires_at, scrape_source, refresh_policy,
-    ]);
-    verifying_key.verify(&encoded, sig).is_ok()
+    verifying_key.verify(&fields.encode(), sig).is_ok()
 }
 
 /// Sign an Announcement. Covers all fields except `sig`.
-/// sign(record_id, source_hash, schema, tags, holder_addr, expires_at)
-pub fn sign_announcement(
-    signing_key: &SigningKey,
-    record_id: &[u8],
-    source_hash: &[u8],
-    schema: &[u8],
-    tags: &[u8],
-    holder_addr: &[u8],
-    expires_at: &[u8],
-) -> Signature {
-    let encoded = canonical_encode_fields(&[record_id, source_hash, schema, tags, holder_addr, expires_at]);
-    signing_key.sign(&encoded)
+pub fn sign_announcement(signing_key: &SigningKey, fields: &AnnouncementFields) -> Signature {
+    signing_key.sign(&fields.encode())
 }
 
 /// Verify an Announcement signature.
 pub fn verify_announcement_sig(
     verifying_key: &VerifyingKey,
-    record_id: &[u8],
-    source_hash: &[u8],
-    schema: &[u8],
-    tags: &[u8],
-    holder_addr: &[u8],
-    expires_at: &[u8],
+    fields: &AnnouncementFields,
     sig: &Signature,
 ) -> bool {
-    let encoded = canonical_encode_fields(&[record_id, source_hash, schema, tags, holder_addr, expires_at]);
-    verifying_key.verify(&encoded, sig).is_ok()
+    verifying_key.verify(&fields.encode(), sig).is_ok()
 }
 
 /// Compute record_id as Blake3 of canonical content fields.
@@ -96,7 +109,8 @@ pub fn compute_record_id(
     body: &[u8],
     created_at: &[u8],
 ) -> String {
-    let encoded = canonical_encode_fields(&[source_url, source_hash, schema, tags, body, created_at]);
+    let encoded =
+        canonical_encode_fields(&[source_url, source_hash, schema, tags, body, created_at]);
     blake3::hash(&encoded).to_hex().to_string()
 }
 
@@ -246,9 +260,25 @@ mod tests {
         let sk = SigningKey::generate(&mut rng);
         let vk = sk.verifying_key();
 
-        let sig = sign_record(&sk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once");
-        assert!(verify_record_sig(&vk, b"id", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once", &sig));
-        assert!(!verify_record_sig(&vk, b"wrong", b"url", b"hash", b"schema", b"tags", b"body", b"1234", b"5678", b"url", b"once", &sig));
+        let fields = RecordFields {
+            id: b"id".to_vec(),
+            source_url: b"url".to_vec(),
+            source_hash: b"hash".to_vec(),
+            schema: b"schema".to_vec(),
+            tags: b"tags".to_vec(),
+            body: b"body".to_vec(),
+            created_at: b"1234".to_vec(),
+            expires_at: b"5678".to_vec(),
+            scrape_source: b"url".to_vec(),
+            refresh_policy: b"once".to_vec(),
+        };
+        let sig = sign_record(&sk, &fields);
+        assert!(verify_record_sig(&vk, &fields, &sig));
+        let wrong_fields = RecordFields {
+            id: b"wrong".to_vec(),
+            ..fields.clone()
+        };
+        assert!(!verify_record_sig(&vk, &wrong_fields, &sig));
     }
 
     #[test]
@@ -257,9 +287,21 @@ mod tests {
         let sk = SigningKey::generate(&mut rng);
         let vk = sk.verifying_key();
 
-        let sig = sign_announcement(&sk, b"rid", b"shash", b"schema", b"tags", b"addr", b"exp");
-        assert!(verify_announcement_sig(&vk, b"rid", b"shash", b"schema", b"tags", b"addr", b"exp", &sig));
-        assert!(!verify_announcement_sig(&vk, b"wrong", b"shash", b"schema", b"tags", b"addr", b"exp", &sig));
+        let fields = AnnouncementFields {
+            record_id: b"rid".to_vec(),
+            source_hash: b"shash".to_vec(),
+            schema: b"schema".to_vec(),
+            tags: b"tags".to_vec(),
+            holder_addr: b"addr".to_vec(),
+            expires_at: b"exp".to_vec(),
+        };
+        let sig = sign_announcement(&sk, &fields);
+        assert!(verify_announcement_sig(&vk, &fields, &sig));
+        let wrong_fields = AnnouncementFields {
+            record_id: b"wrong".to_vec(),
+            ..fields.clone()
+        };
+        assert!(!verify_announcement_sig(&vk, &wrong_fields, &sig));
     }
 
     #[test]

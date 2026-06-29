@@ -57,7 +57,9 @@ pub async fn start_api_server(
 
     // Spawn the server loop with a connection-limiting semaphore
     let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
-    tokio::spawn(api_server_loop(listener, data_dir, node_id, config, store, semaphore));
+    tokio::spawn(api_server_loop(
+        listener, data_dir, node_id, config, store, semaphore,
+    ));
 
     Ok(actual_port)
 }
