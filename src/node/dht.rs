@@ -55,12 +55,10 @@ impl RoutingTable {
     /// Find the K closest peers to a target node_id.
     pub fn find_closest(&self, target_id: &str, k: usize) -> Vec<RoutingEntry> {
         let mut entries: Vec<&RoutingEntry> = self.buckets.values().collect();
-        entries.sort_by_key(|e| {
-            let dist = Self::xor_distance(&e.node_id, target_id);
-            // Convert first 8 bytes of distance to u64 for comparison
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(&dist[..8]);
-            u64::from_be_bytes(arr)
+        entries.sort_by(|a, b| {
+            let dist_a = Self::xor_distance(&a.node_id, target_id);
+            let dist_b = Self::xor_distance(&b.node_id, target_id);
+            dist_a.cmp(&dist_b)
         });
         entries.into_iter().take(k).cloned().collect()
     }

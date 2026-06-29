@@ -295,11 +295,27 @@ fn extract_config_version(toml_str: &str) -> Option<u32> {
 }
 
 /// Save config to data_dir/config.toml.
+/// Preserves the `[meta]` section (config_version) if it exists in the current file.
 pub fn save_config(data_dir: &Path, config: &DsearchConfig) -> Result<(), String> {
     let config_path = data_dir.join("config.toml");
+
+    // Read existing file to preserve config_version
+    let existing_version = if config_path.exists() {
+        let contents = std::fs::read_to_string(&config_path)
+            .map_err(|e| format!("Failed to read config.toml: {}", e))?;
+        extract_config_version(&contents)
+    } else {
+        None
+    };
+
     let toml_str =
         toml::to_string_pretty(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
-    std::fs::write(&config_path, toml_str)
+
+    // Append [meta] section with config_version
+    let version = existing_version.unwrap_or(CURRENT_CONFIG_VERSION);
+    let final_str = format!("{}\n[meta]\nconfig_version = {}\n", toml_str.trim_end(), version);
+
+    std::fs::write(&config_path, final_str)
         .map_err(|e| format!("Failed to write config.toml: {}", e))?;
     Ok(())
 }
@@ -535,5 +551,54 @@ ttl_secs = 0
         assert_eq!(config.scraper.jobs[1].source, ScrapeSource::Url);
         assert_eq!(config.scraper.jobs[1].refresh, RefreshPolicy::Once);
         assert_eq!(config.scraper.jobs[1].lifecycle, Lifecycle::Pinned);
+    }
+
+    #[test]
+    fn save_config_preserves_meta_section() {
+        let dir = std::env::temp_dir().join("dsearch_test_save_config_meta");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write initial config with [meta] section
+        let initial = r#"[node]
+role = "light"
+
+[meta]
+config_version = 1
+"#;
+        std::fs::write(dir.join("config.toml"), initial).unwrap();
+
+        // Load, modify, and save
+        let mut config = load_config(&dir).unwrap();
+        config.node.role = "full".to_string();
+        save_config(&dir, &config).unwrap();
+
+        // Verify [meta] section is preserved
+        let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(saved.contains("[meta]"));
+        assert!(saved.contains("config_version = 1"));
+        assert!(saved.contains("role = \"full\""));
+
+        // Verify the version is still extractable
+        assert_eq!(extract_config_version(&saved), Some(1));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_config_new_file_gets_current_version() {
+        let dir = std::env::temp_dir().join("dsearch_test_save_config_new");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // No existing config.toml — save_config should use CURRENT_CONFIG_VERSION
+        let config = DsearchConfig::default();
+        save_config(&dir, &config).unwrap();
+
+        let saved = std::fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(saved.contains("[meta]"));
+        assert_eq!(extract_config_version(&saved), Some(CURRENT_CONFIG_VERSION));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

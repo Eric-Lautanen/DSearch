@@ -8,7 +8,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
+
+/// Maximum concurrent gateway connections.
+const MAX_CONCURRENT_CONNECTIONS: usize = 100;
 
 /// Start the gateway API server (if enabled in config).
 pub async fn start_gateway_server(
@@ -37,6 +41,7 @@ pub async fn start_gateway_server(
     let rate_limit = config.gateway.rate_limit_per_min;
     let require_key = config.gateway.require_api_key;
     let key_store = Arc::new(GatewayKeyStore::new(data_dir.clone()));
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
 
     tokio::spawn(gateway_server_loop(
         listener,
@@ -46,6 +51,7 @@ pub async fn start_gateway_server(
         key_store,
         rate_limit,
         require_key,
+        semaphore,
     ));
 
     Ok(())
@@ -59,17 +65,21 @@ async fn gateway_server_loop(
     key_store: Arc<GatewayKeyStore>,
     rate_limit: u32,
     require_key: bool,
+    semaphore: Arc<Semaphore>,
 ) {
     loop {
         match listener.accept().await {
-            Ok((stream, _addr)) => {
+            Ok((stream, addr)) => {
                 let data_dir = data_dir.clone();
                 let node_id = node_id.clone();
                 let store = store.clone();
                 let key_store = key_store.clone();
+                let sem = semaphore.clone();
                 tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
                     if let Err(e) = handle_gateway_connection(
                         stream,
+                        addr,
                         &data_dir,
                         &node_id,
                         &store,
@@ -92,6 +102,7 @@ async fn gateway_server_loop(
 
 async fn handle_gateway_connection(
     mut stream: tokio::net::TcpStream,
+    peer_addr: SocketAddr,
     data_dir: &std::path::PathBuf,
     node_id: &str,
     store: &Arc<Store>,
@@ -114,12 +125,11 @@ async fn handle_gateway_connection(
     // Extract API key from Authorization header or query param
     let api_key = extract_api_key(&req);
 
-    // Check rate limit
+    // Check rate limit — per-key if authenticated, per-IP if not
     let identifier = if let Some(ref key) = api_key {
         key.clone()
     } else {
-        // Fall back to a per-IP identifier (we don't have real IP here, use "anonymous")
-        "anonymous".to_string()
+        peer_addr.ip().to_string()
     };
 
     if !key_store.check_rate_limit(&identifier, rate_limit) {

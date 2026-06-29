@@ -48,8 +48,8 @@ pub async fn run_url_job(
         sig: "".to_string(),
     };
 
-    record = sanitize_record(&record)?;
-    let result = store.insert_record(&record)?;
+    record = sanitize_record(&mut record)?;
+    let result = store.insert_record(&mut record)?;
 
     Ok(ScrapeResult {
         job_name: name.to_string(),
@@ -248,12 +248,28 @@ fn load_native_certs(root_store: &mut rustls::RootCertStore) {
     }
     #[cfg(target_os = "windows")]
     {
-        // TODO: Windows cert loading — reading the system cert store requires
-        // either the windows-sys crate (a dep) or shelling out to a tool that
-        // can export PEM. For now, HTTPS scraping on Windows will fail with a
-        // cert verification error unless the user places a ca-bundle.crt at one
-        // of these paths. The keyword-discovery path (reqwest) handles its own
-        // cert loading, so this only affects the hand-rolled url scraper.
+        // Windows system cert store access: use the certutil command to export
+        // the system CA bundle as PEM, then load it. This avoids adding a
+        // Windows-specific crate dependency while still supporting HTTPS scraping.
+        let temp_dir = std::env::temp_dir();
+        let export_path = temp_dir.join("dsearch_ca_bundle.pem");
+        // Try exporting the system root CA store via certutil
+        let output = std::process::Command::new("certutil")
+            .args([
+                "-convert",
+                "-f",
+                "ROOT",
+                "PEM",
+                &export_path.to_string_lossy(),
+            ])
+            .output();
+        if let Ok(out) = &output {
+            if out.status.success() && export_path.exists() {
+                try_load_pem_file(root_store, &export_path.to_string_lossy());
+                let _ = std::fs::remove_file(&export_path);
+            }
+        }
+        // Fallback: try common PEM bundle locations
         try_load_pem_file(root_store, "C:\\ProgramData\\curl\\ca-bundle.crt");
         try_load_pem_file(root_store, "C:\\curl\\ca-bundle.crt");
     }

@@ -146,21 +146,37 @@ fn parse_date_value(value: &str) -> Option<u64> {
             parts[1].parse::<u32>(),
             parts[2].parse::<u32>(),
         ) {
-            // Simple date-to-unix: approximate using 365.25-day years
-            let days = (y as i64) * 365 + (y as i64) / 4 - (y as i64) / 100 + (y as i64) / 400;
-            let month_days: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-            let day_of_year = month_days.get(m as usize - 1).copied().unwrap_or(0) + d as i64;
-            let is_leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-            let extra = if m > 2 && is_leap { 1 } else { 0 };
-            let total_days = days + day_of_year + extra;
-            // Unix epoch is 1970-01-01
-            let epoch_days = 1970i64 * 365 + 1970 / 4 - 1970 / 100 + 1970 / 400;
-            let diff_days = total_days - epoch_days;
-            return Some((diff_days * 86400) as u64);
+            // Validate month range
+            if m < 1 || m > 12 {
+                return None;
+            }
+            // Validate day range (simplified — doesn't check per-month max)
+            if d < 1 || d > 31 {
+                return None;
+            }
+            // Use proper calendar arithmetic via days_from_civil
+            let days = days_from_civil(y, m as i32, d as i32);
+            let epoch_days = days_from_civil(1970, 1, 1);
+            let diff_days = days - epoch_days;
+            if diff_days < 0 {
+                return None;
+            }
+            return Some((diff_days as u64) * 86400);
         }
     }
 
     None
+}
+
+/// Convert a civil date (year, month, day) to a day count from an epoch.
+/// Uses Howard Hinnant's algorithm — correct for all Gregorian dates.
+fn days_from_civil(y: i32, m: i32, d: i32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
+    let yoe = (y as i64) - (era as i64) * 400;
+    let doy = (153i64 * (m as i64 + if m > 2 { -3 } else { 9 }) + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era as i64 * 146097 + doe - 719468
 }
 
 /// Check if a record matches a parsed query.
@@ -199,9 +215,9 @@ pub fn matches_query(record: &crate::model::ContentRecord, query: &ParsedQuery) 
                 }
             }
             "title" => {
-                // "title" maps to the record id or source_url for now
-                // (ContentRecord doesn't have a separate title field)
-                let searchable = format!("{} {}", record.id, record.source_url).to_lowercase();
+                // "title" maps to the record id, source_url, and first line of body
+                let first_line = record.body.lines().next().unwrap_or("");
+                let searchable = format!("{} {} {}", record.id, record.source_url, first_line).to_lowercase();
                 if !searchable.contains(value) {
                     return false;
                 }
@@ -700,5 +716,43 @@ mod tests {
         let s1 = score_record(&r, &q, 1);
         let s5 = score_record(&r, &q, 5);
         assert!(s5 > s1, "more holders should score higher");
+    }
+
+    #[test]
+    fn date_parsing_known_date() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        let ts = parse_date_value("2024-01-01");
+        assert_eq!(ts, Some(1704067200));
+    }
+
+    #[test]
+    fn date_parsing_leap_year() {
+        // 2024-02-29 (leap day) should be valid
+        let ts = parse_date_value("2024-02-29");
+        assert!(ts.is_some());
+    }
+
+    #[test]
+    fn date_parsing_invalid_month() {
+        let ts = parse_date_value("2024-13-01");
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn date_parsing_invalid_month_zero() {
+        let ts = parse_date_value("2024-00-15");
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn date_parsing_invalid_day_zero() {
+        let ts = parse_date_value("2024-01-00");
+        assert!(ts.is_none());
+    }
+
+    #[test]
+    fn date_parsing_unix_timestamp() {
+        let ts = parse_date_value("1704067200");
+        assert_eq!(ts, Some(1704067200));
     }
 }

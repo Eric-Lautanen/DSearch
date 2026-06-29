@@ -7,7 +7,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tracing::{error, info, warn};
+
+/// Maximum concurrent API connections.
+const MAX_CONCURRENT_CONNECTIONS: usize = 100;
 
 /// Start the local HTTP API server.
 /// Tries ports from `start_port` up to `start_port + 10`.
@@ -51,8 +55,9 @@ pub async fn start_api_server(
     std::fs::write(&port_path, actual_port.to_string())
         .map_err(|e| format!("write api.port: {}", e))?;
 
-    // Spawn the server loop
-    tokio::spawn(api_server_loop(listener, data_dir, node_id, config, store));
+    // Spawn the server loop with a connection-limiting semaphore
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+    tokio::spawn(api_server_loop(listener, data_dir, node_id, config, store, semaphore));
 
     Ok(actual_port)
 }
@@ -63,6 +68,7 @@ async fn api_server_loop(
     node_id: String,
     config: DsearchConfig,
     store: Arc<Store>,
+    semaphore: Arc<Semaphore>,
 ) {
     loop {
         match listener.accept().await {
@@ -71,7 +77,10 @@ async fn api_server_loop(
                 let node_id = node_id.clone();
                 let config = config.clone();
                 let store = store.clone();
+                let sem = semaphore.clone();
                 tokio::spawn(async move {
+                    // Acquire a permit — if the semaphore is exhausted, wait
+                    let _permit = sem.acquire().await;
                     if let Err(e) =
                         handle_connection(stream, data_dir, node_id, config, store).await
                     {

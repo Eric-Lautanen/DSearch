@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 /// Default maximum concurrent QUIC connections.
@@ -28,6 +28,8 @@ pub struct Node {
     pub active_connections: Arc<AtomicUsize>,
     /// Maximum concurrent QUIC connections.
     pub max_connections: usize,
+    /// Mutex to serialize peers.json writes from concurrent tasks.
+    pub peers_file_mutex: Arc<Mutex<()>>,
 }
 
 impl Node {
@@ -68,6 +70,7 @@ impl Node {
             running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             active_connections: Arc::new(AtomicUsize::new(0)),
             max_connections,
+            peers_file_mutex: Arc::new(Mutex::new(())),
         }
     }
 
@@ -85,11 +88,21 @@ impl Node {
         let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
         // Bounded channel for inbound messages — provides backpressure
         // when the node is overwhelmed with incoming data.
-        let (inbound_tx, _inbound_rx) = mpsc::channel::<Vec<u8>>(256);
+        // The inbound_rx is consumed by a dedicated task that processes
+        // raw message bytes (e.g. logging, metrics, or forwarding).
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Vec<u8>>(256);
         self.shutdown_tx = Some(shutdown_tx);
         self.endpoint = Some(endpoint);
         self.running
             .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        // Spawn a task to drain the inbound channel and log messages
+        tokio::spawn(async move {
+            let mut rx = inbound_rx;
+            while let Some(data) = rx.recv().await {
+                tracing::debug!("Inbound message: {} bytes", data.len());
+            }
+        });
 
         info!(
             "Node {} listening on {}",
@@ -105,12 +118,14 @@ impl Node {
         let data_dir = self.data_dir.clone();
         let active_connections = self.active_connections.clone();
         let max_connections = self.max_connections;
+        let peers_file_mutex = self.peers_file_mutex.clone();
 
         // Periodic dead-peer pruning task
         {
             let rt = self.routing_table.clone();
             let running = self.running.clone();
             let dd = self.data_dir.clone();
+            let pfm = self.peers_file_mutex.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
                 loop {
@@ -121,7 +136,7 @@ impl Node {
                     let pruned = rt.write().await.prune_dead_peers();
                     if pruned > 0 {
                         info!("Pruned {} stale peers from routing table", pruned);
-                        write_peers_file(&rt, &dd).await;
+                        write_peers_file(&rt, &dd, &pfm).await;
                     }
                 }
             });
@@ -148,9 +163,10 @@ impl Node {
                                 let dd = data_dir.clone();
                                 let ac = active_connections.clone();
                                 let ib_tx = inbound_tx.clone();
+                                let pfm = peers_file_mutex.clone();
                                 tokio::spawn(async move {
                                     ac.fetch_add(1, Ordering::Relaxed);
-                                    let result = handle_connection(incoming, rt, nid, r, running, dd, ib_tx).await;
+                                    let result = handle_connection(incoming, rt, nid, r, running, dd, ib_tx, pfm).await;
                                     ac.fetch_sub(1, Ordering::Relaxed);
                                     if let Err(e) = result {
                                         error!("Connection error: {}", e);
@@ -233,7 +249,10 @@ impl Node {
                 );
 
                 // Write peers file immediately
-                self.write_peers_file().await;
+                {
+                    let _lock = self.peers_file_mutex.lock().await;
+                    self.write_peers_file_inner().await;
+                }
             }
         }
 
@@ -245,6 +264,7 @@ impl Node {
         let running = self.running.clone();
         let data_dir = self.data_dir.clone();
         let peer_id = peer_node_id.clone();
+        let pfm = self.peers_file_mutex.clone();
         tokio::spawn(async move {
             if let Err(e) = handle_messages(
                 &mut recv,
@@ -253,6 +273,7 @@ impl Node {
                 &peer_id,
                 running,
                 &data_dir,
+                &pfm,
             )
             .await
             {
@@ -302,7 +323,8 @@ impl Node {
     }
 
     /// Write current routing table to peers.json for CLI access.
-    async fn write_peers_file(&self) {
+    /// Callers should hold peers_file_mutex before calling this.
+    async fn write_peers_file_inner(&self) {
         let rt = self.routing_table.read().await;
         let peers: Vec<serde_json::Value> = rt
             .list()
@@ -329,6 +351,7 @@ async fn handle_connection(
     running: Arc<std::sync::atomic::AtomicBool>,
     data_dir: std::path::PathBuf,
     _inbound_tx: mpsc::Sender<Vec<u8>>,
+    peers_file_mutex: Arc<Mutex<()>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let conn = incoming.await?;
     let remote_addr = conn.remote_address();
@@ -380,16 +403,17 @@ async fn handle_connection(
             );
 
             // Write peers file immediately after inbound insert
-            write_peers_file(&routing_table, &data_dir).await;
+            write_peers_file(&routing_table, &data_dir, &peers_file_mutex).await;
             info!("Wrote peers.json after inbound connect");
 
             // Handle subsequent messages
             let rt = routing_table.clone();
             let peer_id = hs.node_id.clone();
             let dd = data_dir.clone();
+            let pfm = peers_file_mutex.clone();
             tokio::spawn(async move {
                 if let Err(e) =
-                    handle_messages(&mut recv, &mut send, &rt, &peer_id, running, &dd).await
+                    handle_messages(&mut recv, &mut send, &rt, &peer_id, running, &dd, &pfm).await
                 {
                     debug!(
                         "Message loop ended for {}: {}",
@@ -411,6 +435,7 @@ async fn handle_messages(
     peer_node_id: &str,
     running: Arc<std::sync::atomic::AtomicBool>,
     data_dir: &std::path::PathBuf,
+    peers_file_mutex: &Arc<Mutex<()>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Cleanup runs on every exit path — clean close, explicit Goodbye,
     // or connection error. Without this, a hard connection close (e.g.
@@ -421,7 +446,7 @@ async fn handle_messages(
 
     // Always remove peer and update peers.json, regardless of exit reason
     routing_table.write().await.remove(peer_node_id);
-    write_peers_file(routing_table, data_dir).await;
+    write_peers_file(routing_table, data_dir, peers_file_mutex).await;
 
     match &result {
         Ok(()) => info!(
@@ -447,14 +472,9 @@ async fn handle_messages_inner(
     _data_dir: &std::path::PathBuf,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     loop {
-        // Use select! so that a shutdown signal (running=false) is detected
-        // even while we're waiting for the next frame. Without this, the
-        // read_frame call blocks forever if the remote side hasn't sent
-        // anything and we're just idling.
         let frame_result = tokio::select! {
             f = frame::read_frame(recv) => f,
             _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {
-                // Timed out — check running flag and loop back
                 if !running.load(std::sync::atomic::Ordering::SeqCst) {
                     let goodbye = Goodbye { reason: "shutdown".to_string() };
                     let goodbye_frame = Frame::new(MsgType::Goodbye, serde_json::to_vec(&goodbye)?);
@@ -493,6 +513,133 @@ async fn handle_messages_inner(
                         Frame::new(MsgType::FindNodeReply, serde_json::to_vec(&reply)?);
                     frame::write_frame(send, &reply_frame).await?;
                 }
+                MsgType::Announce => {
+                    let ann: Announce = f.decode_payload()?;
+                    debug!(
+                        "Announce from {}: record_id={} holder={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        ann.record_id,
+                        ann.holder_addr
+                    );
+                    let ack = AnnounceAck {
+                        record_id: ann.record_id.clone(),
+                        accepted: true,
+                        reason: String::new(),
+                    };
+                    let ack_frame = Frame::new(MsgType::AnnounceAck, serde_json::to_vec(&ack)?);
+                    frame::write_frame(send, &ack_frame).await?;
+                }
+                MsgType::AnnounceAck => {
+                    let ack: AnnounceAck = f.decode_payload()?;
+                    debug!(
+                        "AnnounceAck from {}: record_id={} accepted={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        ack.record_id,
+                        ack.accepted
+                    );
+                }
+                MsgType::SearchQuery => {
+                    let sq: SearchQuery = f.decode_payload()?;
+                    debug!(
+                        "SearchQuery from {}: query={:?}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        sq.query
+                    );
+                    // Respond with empty results — actual search requires store access
+                    // which is wired through the API layer. The DHT fan-out path
+                    // will forward queries to closer peers.
+                    let reply = SearchReply {
+                        query: sq.query.clone(),
+                        results: vec![],
+                        from_node: peer_node_id.to_string(),
+                    };
+                    let reply_frame =
+                        Frame::new(MsgType::SearchReply, serde_json::to_vec(&reply)?);
+                    frame::write_frame(send, &reply_frame).await?;
+                }
+                MsgType::SearchReply => {
+                    let sr: SearchReply = f.decode_payload()?;
+                    debug!(
+                        "SearchReply from {}: {} results",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        sr.results.len()
+                    );
+                }
+                MsgType::RecordFetch => {
+                    let rf: RecordFetch = f.decode_payload()?;
+                    debug!(
+                        "RecordFetch from {}: record_id={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        rf.record_id
+                    );
+                    // Respond with not_found — actual record lookup requires store access
+                    let reply = RecordReply {
+                        record_id: rf.record_id.clone(),
+                        record_json: None,
+                        not_found: true,
+                    };
+                    let reply_frame =
+                        Frame::new(MsgType::RecordReply, serde_json::to_vec(&reply)?);
+                    frame::write_frame(send, &reply_frame).await?;
+                }
+                MsgType::RecordReply => {
+                    let rr: RecordReply = f.decode_payload()?;
+                    debug!(
+                        "RecordReply from {}: record_id={} found={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        rr.record_id,
+                        !rr.not_found
+                    );
+                }
+                MsgType::ReplicatePush => {
+                    let rp: ReplicatePush = f.decode_payload()?;
+                    debug!(
+                        "ReplicatePush from {}: record_id={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        rp.record_id
+                    );
+                    let ack = ReplicateAck {
+                        record_id: rp.record_id.clone(),
+                        accepted: true,
+                        reason: String::new(),
+                    };
+                    let ack_frame =
+                        Frame::new(MsgType::ReplicateAck, serde_json::to_vec(&ack)?);
+                    frame::write_frame(send, &ack_frame).await?;
+                }
+                MsgType::ReplicateAck => {
+                    let ra: ReplicateAck = f.decode_payload()?;
+                    debug!(
+                        "ReplicateAck from {}: record_id={} accepted={}",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        ra.record_id,
+                        ra.accepted
+                    );
+                }
+                MsgType::PeerExchange => {
+                    let pe: PeerExchange = f.decode_payload()?;
+                    debug!(
+                        "PeerExchange from {}: {} peers",
+                        &peer_node_id[..8.min(peer_node_id.len())],
+                        pe.peers.len()
+                    );
+                    // Respond with our known peers
+                    let our_peers: Vec<NodeInfo> = routing_table
+                        .read()
+                        .await
+                        .list()
+                        .iter()
+                        .filter(|e| e.node_id != peer_node_id)
+                        .map(|e| NodeInfo {
+                            id: e.node_id.clone(),
+                            addr: e.addr.clone(),
+                        })
+                        .collect();
+                    let reply = PeerExchange { peers: our_peers };
+                    let reply_frame =
+                        Frame::new(MsgType::PeerExchange, serde_json::to_vec(&reply)?);
+                    frame::write_frame(send, &reply_frame).await?;
+                }
                 MsgType::Goodbye => {
                     let gb: Goodbye = f.decode_payload()?;
                     info!(
@@ -518,7 +665,9 @@ async fn handle_messages_inner(
 }
 
 /// Helper: write current routing table to peers.json.
-async fn write_peers_file(routing_table: &Arc<RwLock<RoutingTable>>, data_dir: &Path) {
+/// Acquires peers_file_mutex to prevent concurrent writes.
+async fn write_peers_file(routing_table: &Arc<RwLock<RoutingTable>>, data_dir: &Path, peers_file_mutex: &Arc<Mutex<()>>) {
+    let _lock = peers_file_mutex.lock().await;
     let rt = routing_table.read().await;
     let peers: Vec<serde_json::Value> = rt
         .list()

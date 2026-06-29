@@ -1,3 +1,4 @@
+use crate::config::StorageConfig;
 use crate::model::Announcement;
 use crate::model::ContentRecord;
 use redb::{Database, ReadableTable, ReadableTableMetadata, TableDefinition};
@@ -15,27 +16,34 @@ pub enum InsertResult {
     ReplacedNewer,
 }
 
-pub fn insert_record(db: &Database, record: &ContentRecord) -> Result<InsertResult, String> {
+pub fn insert_record(
+    db: &Database,
+    record: &ContentRecord,
+    config: Option<&StorageConfig>,
+) -> Result<InsertResult, String> {
     record
         .validate_size()
         .map_err(|e| format!("record validation: {}", e))?;
 
-    // Phase 1: read-only check for dedup
-    let dedup_info = {
-        let read_tx = db
-            .begin_read()
-            .map_err(|e| format!("insert read tx: {}", e))?;
-        let source_index = read_tx
+    let json =
+        serde_json::to_string(record).map_err(|e| format!("serialize record: {}", e))?;
+
+    let write_tx = db
+        .begin_write()
+        .map_err(|e| format!("insert write tx: {}", e))?;
+
+    // Dedup check and insert in a single write transaction (eliminates TOCTOU race)
+    let dedup_result: Option<(String, bool)> = {
+        let source_index = write_tx
             .open_table(SOURCE_INDEX_TABLE)
             .map_err(|e| format!("open source_index: {}", e))?;
-        match source_index.get(&record.source_hash.as_str()) {
+        let result = match source_index.get(&record.source_hash.as_str()) {
             Ok(Some(existing_id_guard)) => {
                 let existing_id = existing_id_guard.value().to_string();
-                drop(source_index);
-                let records = read_tx
+                let records = write_tx
                     .open_table(RECORDS_TABLE)
                     .map_err(|e| format!("open records for dedup check: {}", e))?;
-                match records.get(&existing_id.as_str()) {
+                let x = match records.get(&existing_id.as_str()) {
                     Ok(Some(existing_json_guard)) => {
                         let existing: ContentRecord =
                             serde_json::from_str(existing_json_guard.value())
@@ -48,41 +56,33 @@ pub fn insert_record(db: &Database, record: &ContentRecord) -> Result<InsertResu
                     }
                     Ok(None) => None,
                     Err(e) => return Err(format!("read existing record for dedup: {}", e)),
-                }
+                };
+                x
             }
             Ok(None) => None,
             Err(e) => return Err(format!("source_index lookup: {}", e)),
-        }
+        };
+        result
     };
 
-    let result = match dedup_info {
-        Some((_existing_id, false)) => return Ok(InsertResult::SkippedOlder),
-        Some((existing_id, true)) => {
-            let write_tx = db
-                .begin_write()
-                .map_err(|e| format!("dedup delete write tx: {}", e))?;
-            {
-                let mut records = write_tx
-                    .open_table(RECORDS_TABLE)
-                    .map_err(|e| format!("open records for dedup delete: {}", e))?;
-                records
-                    .remove(&existing_id.as_str())
-                    .map_err(|e| format!("remove old record: {}", e))?;
-            }
+    match dedup_result {
+        Some((ref _existing_id, false)) => {
             write_tx
                 .commit()
-                .map_err(|e| format!("dedup delete commit: {}", e))?;
-            InsertResult::ReplacedNewer
+                .map_err(|e| format!("commit skip: {}", e))?;
+            return Ok(InsertResult::SkippedOlder);
         }
-        None => InsertResult::Inserted,
-    };
+        Some((ref existing_id, true)) => {
+            let mut records = write_tx
+                .open_table(RECORDS_TABLE)
+                .map_err(|e| format!("open records for dedup delete: {}", e))?;
+            records
+                .remove(existing_id.as_str())
+                .map_err(|e| format!("remove old record: {}", e))?;
+        }
+        None => {}
+    }
 
-    // Phase 2: insert the new record
-    let json = serde_json::to_string(record).map_err(|e| format!("serialize record: {}", e))?;
-
-    let write_tx = db
-        .begin_write()
-        .map_err(|e| format!("insert write tx: {}", e))?;
     {
         let mut records = write_tx
             .open_table(RECORDS_TABLE)
@@ -92,22 +92,38 @@ pub fn insert_record(db: &Database, record: &ContentRecord) -> Result<InsertResu
             .map_err(|e| format!("insert record: {}", e))?;
     }
     {
-        let source_index = write_tx
-            .open_table(SOURCE_INDEX_TABLE)
-            .map_err(|e| format!("open source_index: {}", e))?;
-        // Need to drop the immutable reference before getting a mutable one
-        drop(source_index);
         let mut source_index = write_tx
             .open_table(SOURCE_INDEX_TABLE)
-            .map_err(|e| format!("reopen source_index: {}", e))?;
+            .map_err(|e| format!("open source_index: {}", e))?;
         source_index
             .insert(record.source_hash.as_str(), record.id.as_str())
             .map_err(|e| format!("update source_index: {}", e))?;
     }
+
+    // Quota check inside the write transaction (eliminates check-then-insert race)
+    if let Some(cfg) = config {
+        if cfg.quota_mb > 0 {
+            let quota_bytes = (cfg.quota_mb as u64) * 1024 * 1024;
+            let current_bytes = records_size_bytes(db)?;
+            let record_bytes = json.len() as u64;
+            if current_bytes + record_bytes > quota_bytes {
+                // Don't commit -- changes in the write tx are discarded
+                return Err(format!(
+                    "Storage quota exceeded ({} MB).",
+                    cfg.quota_mb
+                ));
+            }
+        }
+    }
+
     write_tx
         .commit()
         .map_err(|e| format!("insert commit: {}", e))?;
-    Ok(result)
+
+    match dedup_result {
+        Some((_, true)) => Ok(InsertResult::ReplacedNewer),
+        _ => Ok(InsertResult::Inserted),
+    }
 }
 
 /// Get a ContentRecord by ID.
@@ -550,7 +566,7 @@ mod tests {
     fn insert_and_get_record() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 2000);
-        let result = insert_record(&db, &record).unwrap();
+        let result = insert_record(&db, &record, None).unwrap();
         assert!(matches!(result, InsertResult::Inserted));
 
         let got = get_record(&db, "r1").unwrap().unwrap();
@@ -564,8 +580,8 @@ mod tests {
         let older = make_record("r1", "sh1", 1000, 2000);
         let newer = make_record("r2", "sh1", 2000, 3000);
 
-        insert_record(&db, &older).unwrap();
-        let result = insert_record(&db, &newer).unwrap();
+        insert_record(&db, &older, None).unwrap();
+        let result = insert_record(&db, &newer, None).unwrap();
         assert!(matches!(result, InsertResult::ReplacedNewer));
 
         assert!(get_record(&db, "r1").unwrap().is_none());
@@ -582,8 +598,8 @@ mod tests {
         let newer = make_record("r1", "sh1", 2000, 3000);
         let older = make_record("r2", "sh1", 1000, 2000);
 
-        insert_record(&db, &newer).unwrap();
-        let result = insert_record(&db, &older).unwrap();
+        insert_record(&db, &newer, None).unwrap();
+        let result = insert_record(&db, &older, None).unwrap();
         assert!(matches!(result, InsertResult::SkippedOlder));
 
         assert_eq!(get_record(&db, "r1").unwrap().unwrap().id, "r1");
@@ -598,7 +614,7 @@ mod tests {
     fn delete_record_removes_from_source_index() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 2000);
-        insert_record(&db, &record).unwrap();
+        insert_record(&db, &record, None).unwrap();
 
         assert!(delete_record(&db, "r1").unwrap());
         assert!(get_record(&db, "r1").unwrap().is_none());
@@ -609,7 +625,7 @@ mod tests {
     fn pin_unpin_record() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 2000);
-        insert_record(&db, &record).unwrap();
+        insert_record(&db, &record, None).unwrap();
 
         assert!(pin_record(&db, "r1").unwrap());
         assert!(is_pinned(&db, "r1").unwrap());
@@ -631,8 +647,8 @@ mod tests {
         let mut r2 = make_record("r2", "sh2", 1000, 2000);
         r2.schema = schema::RUST_CRATE.to_string();
 
-        insert_record(&db, &r1).unwrap();
-        insert_record(&db, &r2).unwrap();
+        insert_record(&db, &r1, None).unwrap();
+        insert_record(&db, &r2, None).unwrap();
 
         let wiki = list_records(&db, Some(schema::WIKI_ARTICLE), 100).unwrap();
         assert_eq!(wiki.len(), 1);
@@ -647,7 +663,7 @@ mod tests {
     fn expired_records_are_removed() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 1500);
-        insert_record(&db, &record).unwrap();
+        insert_record(&db, &record, None).unwrap();
 
         let count = delete_expired_records(&db, 2000).unwrap();
         assert_eq!(count, 1);
@@ -658,7 +674,7 @@ mod tests {
     fn pinned_expired_records_are_kept() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 1500);
-        insert_record(&db, &record).unwrap();
+        insert_record(&db, &record, None).unwrap();
         pin_record(&db, "r1").unwrap();
 
         let count = delete_expired_records(&db, 2000).unwrap();
@@ -670,9 +686,9 @@ mod tests {
     fn record_count_works() {
         let (_dir, db) = open_test_db();
         assert_eq!(record_count(&db).unwrap(), 0);
-        insert_record(&db, &make_record("r1", "sh1", 1000, 2000)).unwrap();
+        insert_record(&db, &make_record("r1", "sh1", 1000, 2000), None).unwrap();
         assert_eq!(record_count(&db).unwrap(), 1);
-        insert_record(&db, &make_record("r2", "sh2", 1000, 2000)).unwrap();
+        insert_record(&db, &make_record("r2", "sh2", 1000, 2000), None).unwrap();
         assert_eq!(record_count(&db).unwrap(), 2);
     }
 }

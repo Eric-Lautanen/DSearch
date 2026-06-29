@@ -3,11 +3,14 @@ pub mod index;
 pub mod migrations;
 pub mod quota;
 pub mod records;
+pub mod tier2_limiter;
 use crate::config::StorageConfig;
-use crate::model::{Announcement, ContentRecord};
+use crate::model::ContentRecord;
+use crate::search::cache::SearchCache;
 use redb::{Database, TableDefinition};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// All table definitions used by the store.
 const RECORDS_TABLE: TableDefinition<&str, &str> = TableDefinition::new("records");
@@ -75,23 +78,50 @@ pub fn open_store(data_dir: &Path) -> Result<Arc<Database>, String> {
 pub struct Store {
     db: Arc<Database>,
     config: StorageConfig,
+    signing_key: Option<Arc<ed25519_dalek::SigningKey>>,
+    search_cache: SearchCache,
 }
 
 impl Store {
     pub fn new(db: Arc<Database>, config: StorageConfig) -> Self {
-        Self { db, config }
+        let search_cache = SearchCache::new(Duration::from_secs(30), 256);
+        Self { db, config, signing_key: None, search_cache }
+    }
+
+    pub fn with_signing_key(mut self, key: Arc<ed25519_dalek::SigningKey>) -> Self {
+        self.signing_key = Some(key);
+        self
+    }
+
+    pub fn set_signing_key(&mut self, key: Arc<ed25519_dalek::SigningKey>) {
+        self.signing_key = Some(key);
     }
 
     /// Insert a record with quota check, dedup, and index update.
-    pub fn insert_record(&self, record: &ContentRecord) -> Result<records::InsertResult, String> {
-        // Check quota
-        let json_len = serde_json::to_vec(record)
-            .map_err(|e| format!("serialize for quota check: {}", e))?
-            .len() as u64;
-        quota::check_quota(&self.db, &self.config, json_len)?;
+    /// If a signing key is available, signs the record before storing.
+    pub fn insert_record(&self, record: &mut ContentRecord) -> Result<records::InsertResult, String> {
+        // Sign the record if we have a signing key and it's not already signed
+        if let Some(ref sk) = self.signing_key {
+            if record.sig.is_empty() {
+                let sig = crate::trust::sign::sign_record(
+                    sk,
+                    record.id.as_bytes(),
+                    record.source_url.as_bytes(),
+                    record.source_hash.as_bytes(),
+                    record.schema.as_bytes(),
+                    record.tags.join(",").as_bytes(),
+                    record.body.as_bytes(),
+                    record.created_at.to_string().as_bytes(),
+                    record.expires_at.to_string().as_bytes(),
+                    record.scrape_source.as_str().as_bytes(),
+                    record.refresh_policy.as_str().as_bytes(),
+                );
+                record.sig = sig.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+            }
+        }
 
-        // Insert with dedup
-        let result = records::insert_record(&self.db, record)?;
+        // Quota check is now inside records::insert_record (within the write transaction)
+        let result = records::insert_record(&self.db, record, Some(&self.config))?;
 
         // Update inverted index if inserted or replaced
         match &result {
@@ -146,8 +176,22 @@ impl Store {
         records::is_pinned(&self.db, id)
     }
 
-    /// Insert an announcement.
-    pub fn insert_announcement(&self, ann: &Announcement) -> Result<(), String> {
+    /// Insert an announcement. If a signing key is available, signs the announcement.
+    pub fn insert_announcement(&self, ann: &mut crate::model::Announcement) -> Result<(), String> {
+        if let Some(ref sk) = self.signing_key {
+            if ann.sig.is_empty() {
+                let sig = crate::trust::sign::sign_announcement(
+                    sk,
+                    ann.record_id.as_bytes(),
+                    ann.source_hash.as_bytes(),
+                    ann.schema.as_bytes(),
+                    ann.tags.join(",").as_bytes(),
+                    ann.holder_addr.as_bytes(),
+                    ann.expires_at.to_string().as_bytes(),
+                );
+                ann.sig = sig.to_bytes().iter().map(|b| format!("{:02x}", b)).collect();
+            }
+        }
         records::insert_announcement(&self.db, ann)
     }
 
@@ -164,11 +208,22 @@ impl Store {
 
     /// Search local Tier 3 records using the query language.
     /// Returns records matching the query, ranked by score.
+    /// Results are cached for repeated queries.
     pub fn search_records(
         &self,
         query_str: &str,
         limit: usize,
     ) -> Result<Vec<ContentRecord>, String> {
+        // Build a cache key from the query and limit
+        let cache_key = format!("{}:{}", query_str, limit);
+
+        // Check cache first
+        if let Some(cached) = self.search_cache.get(&cache_key) {
+            if let Ok(records) = serde_json::from_str::<Vec<ContentRecord>>(&cached) {
+                return Ok(records);
+            }
+        }
+
         let parsed = crate::search::query::parse_query(query_str);
         let effective_limit = parsed.limit.unwrap_or(limit);
 
@@ -190,11 +245,18 @@ impl Store {
         matched.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         // Apply limit
-        Ok(matched
+        let results: Vec<ContentRecord> = matched
             .into_iter()
             .take(effective_limit)
             .map(|(r, _)| r)
-            .collect())
+            .collect();
+
+        // Cache the results
+        if let Ok(json) = serde_json::to_string(&results) {
+            self.search_cache.insert(&cache_key, &json);
+        }
+
+        Ok(results)
     }
 
     /// Get record count.
@@ -254,8 +316,8 @@ mod tests {
     #[test]
     fn store_insert_and_list() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 2000);
-        store.insert_record(&r1).unwrap();
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
 
         let records = store.list_records(None, 100).unwrap();
         assert_eq!(records.len(), 1);
@@ -265,11 +327,11 @@ mod tests {
     #[test]
     fn store_dedup_keeps_newer() {
         let (_dir, store) = open_test_store();
-        let older = make_record("r1", "sh1", 1000, 2000);
-        let newer = make_record("r2", "sh1", 2000, 3000);
+        let mut older = make_record("r1", "sh1", 1000, 2000);
+        let mut newer = make_record("r2", "sh1", 2000, 3000);
 
-        store.insert_record(&older).unwrap();
-        let result = store.insert_record(&newer).unwrap();
+        store.insert_record(&mut older).unwrap();
+        let result = store.insert_record(&mut newer).unwrap();
         assert!(matches!(result, records::InsertResult::ReplacedNewer));
 
         let records = store.list_records(None, 100).unwrap();
@@ -280,8 +342,8 @@ mod tests {
     #[test]
     fn store_delete_removes_everywhere() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 2000);
-        store.insert_record(&r1).unwrap();
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
 
         assert!(store.delete_record("r1").unwrap());
         assert!(store.get_record("r1").unwrap().is_none());
@@ -291,8 +353,8 @@ mod tests {
     #[test]
     fn store_pin_unpin() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 2000);
-        store.insert_record(&r1).unwrap();
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
 
         assert!(store.pin_record("r1").unwrap());
         assert!(store.is_pinned("r1").unwrap());
@@ -303,8 +365,8 @@ mod tests {
     #[test]
     fn store_search_by_tag() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 2000);
-        store.insert_record(&r1).unwrap();
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
+        store.insert_record(&mut r1).unwrap();
 
         let results = store
             .search_index("wiki/article", Some("category"), Some("networking"))
@@ -315,8 +377,8 @@ mod tests {
     #[test]
     fn store_expiry_sweep() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 100); // expired
-        store.insert_record(&r1).unwrap();
+        let mut r1 = make_record("r1", "sh1", 1000, 100); // expired
+        store.insert_record(&mut r1).unwrap();
 
         let (removed, _) = store.sweep_once().unwrap();
         assert_eq!(removed, 1);
@@ -326,13 +388,13 @@ mod tests {
     #[test]
     fn store_search_records() {
         let (_dir, store) = open_test_store();
-        let r1 = make_record("r1", "sh1", 1000, 2000);
+        let mut r1 = make_record("r1", "sh1", 1000, 2000);
         let mut r2 = make_record("r2", "sh2", 1000, 2000);
         r2.schema = crate::model::schema::RUST_CRATE.to_string();
         r2.body = "Tokio async runtime benchmarks".to_string();
 
-        store.insert_record(&r1).unwrap();
-        store.insert_record(&r2).unwrap();
+        store.insert_record(&mut r1).unwrap();
+        store.insert_record(&mut r2).unwrap();
 
         // Simple text search
         let results = store.search_records("hello", 10).unwrap();

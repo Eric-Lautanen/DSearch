@@ -305,6 +305,29 @@ impl OnboardingState {
                 ui.label(
                     egui::RichText::new(format!("Found {} bootstrap peer(s)", peers.len())).small(),
                 );
+
+                // Show each peer's reachability status
+                ui.add_space(4.0);
+                for peer in &peers {
+                    let addr_display = &peer.addr;
+                    let reachable = std::net::TcpStream::connect_timeout(
+                        &addr_display.parse().unwrap_or("0.0.0.0:0".parse().unwrap()),
+                        std::time::Duration::from_secs(2),
+                    ).is_ok();
+                    let status = if reachable { "✓" } else { "✗" };
+                    let color = if reachable {
+                        egui::Color32::from_rgb(0x4C, 0xAF, 0x50)
+                    } else {
+                        egui::Color32::from_rgb(0xF4, 0x43, 0x36)
+                    };
+                    ui.horizontal(|ui: &mut egui::Ui| {
+                        ui.label(egui::RichText::new(status).color(color));
+                        ui.label(
+                            egui::RichText::new(format!("{} ({})", &peer.id[..8.min(peer.id.len())], peer.addr))
+                                .small()
+                        );
+                    });
+                }
             } else {
                 ui.label(
                     egui::RichText::new("No bootstrap peers found.")

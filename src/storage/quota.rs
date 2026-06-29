@@ -207,7 +207,7 @@ mod tests {
         };
         for i in 0..5 {
             let r = make_record(&format!("r{}", i), &format!("sh{}", i), 1000 + i);
-            crate::storage::records::insert_record(&db, &r).unwrap();
+            crate::storage::records::insert_record(&db, &r, None).unwrap();
         }
         assert!(check_quota(&db, &config, 1).is_ok());
     }
@@ -222,7 +222,7 @@ mod tests {
         };
         for i in 0..5 {
             let r = make_record(&format!("r{}", i), &format!("sh{}", i), 1000 + i);
-            crate::storage::records::insert_record(&db, &r).unwrap();
+            crate::storage::records::insert_record(&db, &r, None).unwrap();
         }
         let result = check_quota(&db, &config, 1);
         assert!(result.is_err());
@@ -239,7 +239,7 @@ mod tests {
         };
         for i in 0..5 {
             let r = make_record(&format!("r{}", i), &format!("sh{}", i), 1000 + i);
-            crate::storage::records::insert_record(&db, &r).unwrap();
+            crate::storage::records::insert_record(&db, &r, None).unwrap();
         }
 
         let result = check_quota(&db, &config, 1);

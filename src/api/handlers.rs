@@ -1,7 +1,8 @@
 use super::openapi;
 use super::request::HttpRequest;
 use super::response::HttpResponse;
-use crate::config::DsearchConfig;
+use crate::config::{DsearchConfig, StorageConfig};
+use crate::model::ContentRecord;
 use crate::storage::Store;
 /// Route handler for the local HTTP API.
 use std::path::Path;
@@ -24,6 +25,8 @@ pub async fn route(
         ("GET", path) if path.starts_with("/schema/") => handle_get_schema(path, node_id),
         ("GET", "/peers") => handle_list_peers(data_dir, node_id),
         ("POST", "/peers/add") => handle_add_peer(&req, data_dir, node_id),
+        ("POST", "/peers/ban") => handle_ban_peer(&req, data_dir, node_id),
+        ("POST", "/peers/unban") => handle_unban_peer(&req, data_dir, node_id),
         ("GET", "/scraper") => handle_list_scrapers(config, node_id),
         ("POST", "/scraper/run") => handle_run_scraper(&req, config, store, node_id).await,
         ("POST", "/record/insert") => handle_insert_record(&req, store, node_id),
@@ -33,7 +36,9 @@ pub async fn route(
         ("POST", "/record/announce") => handle_announce_record(&req, store, node_id),
         ("POST", "/record/sweep") => handle_sweep(store, node_id),
         ("GET", "/storage") => handle_storage_info(store, node_id),
-        ("POST", "/storage/vacuum") => handle_storage_vacuum(node_id),
+        ("POST", "/storage/vacuum") => handle_storage_vacuum(store, node_id),
+        ("POST", "/storage/export") => handle_storage_export(&req, data_dir, node_id),
+        ("POST", "/storage/import") => handle_storage_import(&req, data_dir, store, node_id),
         ("GET", "/config") => handle_get_config(data_dir, node_id),
         ("POST", "/config/set") => handle_set_config(&req, data_dir, node_id),
         ("GET", "/identity") => handle_identity(data_dir, node_id),
@@ -192,6 +197,70 @@ fn handle_add_peer(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpRes
     HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
 }
 
+fn handle_ban_peer(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpResponse {
+    let body: serde_json::Value = match serde_json::from_str(&req.body) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
+    };
+    let peer_id = match body.get("peer_id").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return HttpResponse::bad_request("missing field: peer_id"),
+    };
+
+    // Write to banned_peers.json
+    let banned_path = data_dir.join("banned_peers.json");
+    let mut banned: Vec<serde_json::Value> = if banned_path.exists() {
+        let contents = std::fs::read_to_string(&banned_path).unwrap_or_default();
+        serde_json::from_str(&contents).unwrap_or_default()
+    } else {
+        vec![]
+    };
+
+    // Check if already banned
+    if banned.iter().any(|b| b.get("peer_id").and_then(|v| v.as_str()) == Some(&peer_id)) {
+        let resp = serde_json::json!({ "ok": true, "banned": peer_id, "already_banned": true });
+        return HttpResponse::json(&resp.to_string()).with_node_headers(node_id);
+    }
+
+    banned.push(serde_json::json!({ "peer_id": peer_id }));
+    if let Ok(json) = serde_json::to_string_pretty(&banned) {
+        let _ = std::fs::write(&banned_path, json);
+    }
+
+    let resp = serde_json::json!({ "ok": true, "banned": peer_id });
+    HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
+}
+
+fn handle_unban_peer(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpResponse {
+    let body: serde_json::Value = match serde_json::from_str(&req.body) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
+    };
+    let peer_id = match body.get("peer_id").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return HttpResponse::bad_request("missing field: peer_id"),
+    };
+
+    let banned_path = data_dir.join("banned_peers.json");
+    if !banned_path.exists() {
+        let resp = serde_json::json!({ "ok": true, "unbanned": peer_id, "was_banned": false });
+        return HttpResponse::json(&resp.to_string()).with_node_headers(node_id);
+    }
+
+    let contents = std::fs::read_to_string(&banned_path).unwrap_or_default();
+    let mut banned: Vec<serde_json::Value> = serde_json::from_str(&contents).unwrap_or_default();
+    let before_len = banned.len();
+    banned.retain(|b| b.get("peer_id").and_then(|v| v.as_str()) != Some(&peer_id));
+    let was_banned = banned.len() < before_len;
+
+    if let Ok(json) = serde_json::to_string_pretty(&banned) {
+        let _ = std::fs::write(&banned_path, json);
+    }
+
+    let resp = serde_json::json!({ "ok": true, "unbanned": peer_id, "was_banned": was_banned });
+    HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
+}
+
 fn handle_list_scrapers(config: &DsearchConfig, node_id: &str) -> HttpResponse {
     let body = serde_json::json!({
         "jobs": config.scraper.jobs,
@@ -256,9 +325,108 @@ fn handle_storage_info(store: &Arc<Store>, node_id: &str) -> HttpResponse {
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }
 
-fn handle_storage_vacuum(node_id: &str) -> HttpResponse {
-    let body = serde_json::json!({ "ok": true, "message": "vacuum not yet implemented" });
+fn handle_storage_vacuum(store: &Arc<Store>, node_id: &str) -> HttpResponse {
+    let record_count = store.record_count().unwrap_or(0);
+    let size_bytes = store.records_size_bytes().unwrap_or(0);
+
+    // redb doesn't support live compaction, but we can report
+    // the current stats and advise the user to stop the node
+    // and re-open with redb's repair/compact mode.
+    let body = serde_json::json!({
+        "ok": true,
+        "message": "vacuum requires stopping the node first to compact the database",
+        "record_count": record_count,
+        "size_bytes": size_bytes,
+    });
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
+}
+
+fn handle_storage_export(req: &HttpRequest, data_dir: &Path, node_id: &str) -> HttpResponse {
+    let body: serde_json::Value = match serde_json::from_str(&req.body) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
+    };
+    let output_path = match body.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return HttpResponse::bad_request("missing field: path"),
+    };
+
+    let db = crate::storage::open_store(data_dir);
+    match db {
+        Ok(db) => {
+            let store = Store::new(db, StorageConfig::default());
+            match store.list_records(None, 1_000_000) {
+                Ok(records) => {
+                    let json = match serde_json::to_string_pretty(&records) {
+                        Ok(j) => j,
+                        Err(e) => return HttpResponse::internal_error(&format!("serialize: {}", e)),
+                    };
+                    match std::fs::write(&output_path, json) {
+                        Ok(()) => {
+                            let resp = serde_json::json!({
+                                "ok": true,
+                                "exported": records.len(),
+                                "path": output_path,
+                            });
+                            HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
+                        }
+                        Err(e) => HttpResponse::internal_error(&format!("write: {}", e)),
+                    }
+                }
+                Err(e) => HttpResponse::internal_error(&e),
+            }
+        }
+        Err(e) => HttpResponse::internal_error(&e),
+    }
+}
+
+fn handle_storage_import(req: &HttpRequest, _data_dir: &Path, store: &Arc<Store>, node_id: &str) -> HttpResponse {
+    let body: serde_json::Value = match serde_json::from_str(&req.body) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::bad_request(&format!("invalid JSON: {}", e)),
+    };
+    let input_path = match body.get("path").and_then(|v| v.as_str()) {
+        Some(p) => p.to_string(),
+        None => return HttpResponse::bad_request("missing field: path"),
+    };
+
+    let json_str = match std::fs::read_to_string(&input_path) {
+        Ok(s) => s,
+        Err(e) => return HttpResponse::internal_error(&format!("read: {}", e)),
+    };
+
+    let records: Vec<ContentRecord> = match serde_json::from_str(&json_str) {
+        Ok(r) => r,
+        Err(e) => return HttpResponse::bad_request(&format!("parse: {}", e)),
+    };
+
+    let mut inserted = 0;
+    let mut replaced = 0;
+    let mut skipped = 0;
+    let mut errors = 0;
+
+    for mut record in records {
+        record = match crate::sanitize::sanitize_record(&record) {
+            Ok(r) => r,
+            Err(_) => { errors += 1; continue; }
+        };
+        match store.insert_record(&mut record) {
+            Ok(crate::storage::records::InsertResult::Inserted) => inserted += 1,
+            Ok(crate::storage::records::InsertResult::ReplacedNewer) => replaced += 1,
+            Ok(crate::storage::records::InsertResult::SkippedOlder) => skipped += 1,
+            Err(_) => errors += 1,
+        }
+    }
+
+    let resp = serde_json::json!({
+        "ok": true,
+        "inserted": inserted,
+        "replaced": replaced,
+        "skipped": skipped,
+        "errors": errors,
+        "path": input_path,
+    });
+    HttpResponse::json(&resp.to_string()).with_node_headers(node_id)
 }
 
 fn handle_get_config(data_dir: &Path, node_id: &str) -> HttpResponse {
@@ -344,11 +512,11 @@ fn handle_insert_record(req: &HttpRequest, store: &Arc<Store>, node_id: &str) ->
         Ok(v) => v,
         Err(e) => return HttpResponse::bad_request(&format!("invalid record JSON: {}", e)),
     };
-    let record = match crate::sanitize::sanitize_record(&record) {
+    let mut record = match crate::sanitize::sanitize_record(&record) {
         Ok(r) => r,
         Err(e) => return HttpResponse::bad_request(&format!("sanitization failed: {}", e)),
     };
-    match store.insert_record(&record) {
+    match store.insert_record(&mut record) {
         Ok(result) => {
             let (action, id) = match result {
                 crate::storage::records::InsertResult::Inserted => ("inserted", record.id.clone()),
@@ -437,7 +605,7 @@ fn handle_announce_record(req: &HttpRequest, store: &Arc<Store>, node_id: &str) 
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs();
-            let ann = crate::model::Announcement {
+            let mut ann = crate::model::Announcement {
                 record_id: record.id.clone(),
                 source_hash: record.source_hash.clone(),
                 schema: record.schema.clone(),
@@ -450,7 +618,7 @@ fn handle_announce_record(req: &HttpRequest, store: &Arc<Store>, node_id: &str) 
                 },
                 sig: "".to_string(),
             };
-            match store.insert_announcement(&ann) {
+            match store.insert_announcement(&mut ann) {
                 Ok(()) => {
                     let resp = serde_json::json!({"ok": true, "id": id});
                     HttpResponse::json(&resp.to_string()).with_node_headers(node_id)

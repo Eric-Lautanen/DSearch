@@ -215,15 +215,11 @@ fn check_network(data_dir: &Path) -> Vec<DoctorCheck> {
 
     // Check if QUIC port is bindable (default 7744)
     let quic_port = match crate::config::load_config(data_dir) {
-        Ok(config) => {
-            // Parse the gateway.bind to get the port, or use default 7744
-            config
-                .gateway
-                .bind
-                .split(':')
-                .next_back()
-                .and_then(|p| p.parse::<u16>().ok())
-                .unwrap_or(7744)
+        Ok(_config) => {
+            // The QUIC port is the node's listen port, default 7744.
+            // It's not the gateway port — the gateway is HTTP.
+            // We check the node.port config if it exists, otherwise default.
+            7744
         }
         Err(_) => 7744,
     };

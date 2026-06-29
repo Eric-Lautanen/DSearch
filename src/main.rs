@@ -21,6 +21,7 @@ use node::roles::NodeRole;
 use node::server::Node;
 use proto::cert;
 use std::net::SocketAddr;
+use std::net::TcpStream;
 use std::path::Path;
 use std::path::PathBuf;
 use storage::Store;
@@ -70,7 +71,7 @@ async fn run_command(
         Commands::Node { action } => cmd_node(action, &data_dir).await,
         Commands::Bootstrap { action } => cmd_bootstrap(action, &data_dir),
         Commands::Peers { action } => cmd_peers(action, &data_dir).await,
-        Commands::Role { action } => cmd_role(action),
+        Commands::Role { action } => cmd_role(action, &data_dir),
         Commands::Search {
             query,
             schema,
@@ -85,10 +86,7 @@ async fn run_command(
         Commands::Scraper { action } => cmd_scraper(action, &data_dir).await,
         Commands::Gateway { action } => cmd_gateway(action, &data_dir),
         Commands::Doctor { output } => cmd_doctor(&data_dir, &output),
-        Commands::Log { .. } => {
-            eprintln!("Log streaming not yet implemented");
-            std::process::exit(1);
-        }
+        Commands::Log { action } => cmd_log(action, &data_dir),
     }
 }
 
@@ -144,6 +142,16 @@ fn cmd_init(
         );
     }
 
+    let providers_path = data_dir.join("search_providers.toml");
+    if !providers_path.exists() {
+        let default_providers = default_search_providers_toml();
+        std::fs::write(&providers_path, default_providers)?;
+        info!(
+            "Created default search_providers.toml at {}",
+            providers_path.display()
+        );
+    }
+
     let role_str = role.unwrap_or("light");
     println!("Node initialized successfully.");
     println!("  Node ID: {}", node_id);
@@ -185,7 +193,10 @@ async fn cmd_node(
             let db = storage::open_store(data_dir)?;
             let cfg = config::load_config(data_dir)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-            let store = std::sync::Arc::new(Store::new(db, cfg.storage.clone()));
+            let store = std::sync::Arc::new(
+                Store::new(db, cfg.storage.clone())
+                    .with_signing_key(std::sync::Arc::new(signing_key.clone()))
+            );
 
             let mut node = Node::new(
                 signing_key,
@@ -211,6 +222,13 @@ async fn cmd_node(
 
             // Start the background expiry sweeper
             let _sweeper = store.start_expiry_sweeper(std::time::Duration::from_secs(300));
+
+            // Start the periodic scraper job scheduler
+            let _scheduler = crate::scraper::scheduler::start_scheduler(
+                store.clone(),
+                cfg.clone(),
+                data_dir.clone(),
+            );
 
             // Start the gateway API if enabled
             if cfg.gateway.enabled {
@@ -389,8 +407,57 @@ async fn cmd_node(
             Ok(())
         }
         NodeAction::Restart => {
-            // Stop then start — for now, just report
-            println!("Node restart: stop the node first with `dsearch node stop`, then `dsearch node start`");
+            // Stop the node first
+            let pid_path = data_dir.join("node.pid");
+            if pid_path.exists() {
+                let pid_str = std::fs::read_to_string(&pid_path)?;
+                let pid: u32 = pid_str
+                    .trim()
+                    .parse()
+                    .map_err(|e| format!("Invalid PID in node.pid: {}", e))?;
+
+                #[cfg(windows)]
+                {
+                    let shutdown_signal = data_dir.join("node.shutdown");
+                    std::fs::write(&shutdown_signal, "restart")?;
+                    println!("Stop signal sent to node (PID {}). Waiting...", pid);
+
+                    let mut exited = false;
+                    for _ in 0..20 {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        let output = std::process::Command::new("tasklist")
+                            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+                            .output()?;
+                        let output_str = String::from_utf8_lossy(&output.stdout);
+                        if !output_str.contains(&pid.to_string()) {
+                            exited = true;
+                            break;
+                        }
+                    }
+
+                    if !exited {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/PID", &pid.to_string(), "/F"])
+                            .output();
+                        println!("Node force-killed (graceful shutdown timed out).");
+                    }
+                    let _ = std::fs::remove_file(&pid_path);
+                    let _ = std::fs::remove_file(data_dir.join("node.shutdown"));
+                }
+
+                #[cfg(unix)]
+                {
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGTERM);
+                    }
+                    println!("SIGTERM sent to node (PID {}).", pid);
+                    let _ = std::fs::remove_file(&pid_path);
+                }
+
+                println!("Node stopped. Start it again with `dsearch node start`.");
+            } else {
+                println!("No running node found. Use `dsearch node start` to start one.");
+            }
             Ok(())
         }
     }
@@ -459,7 +526,61 @@ fn cmd_bootstrap(
             Ok(())
         }
         BootstrapAction::Test => {
-            println!("Bootstrap test: not yet implemented (requires running node)");
+            let peers = bootstrap::resolver::resolve_bootstrap_peers(data_dir);
+            if peers.is_empty() {
+                println!("No bootstrap peers configured. Add peers with `dsearch bootstrap add`.");
+                return Ok(());
+            }
+
+            println!("Testing connectivity to {} bootstrap peer(s)...", peers.len());
+            let mut reachable = 0;
+            let mut failed = 0;
+
+            for peer in &peers {
+                match peer.addr.parse::<SocketAddr>() {
+                    Ok(addr) => {
+                        let start = std::time::Instant::now();
+                        match TcpStream::connect_timeout(&addr, std::time::Duration::from_secs(5)) {
+                            Ok(_) => {
+                                let elapsed = start.elapsed();
+                                println!(
+                                    "  ✓ {} ({}) — {}ms",
+                                    &peer.id[..8.min(peer.id.len())],
+                                    peer.addr,
+                                    elapsed.as_millis()
+                                );
+                                reachable += 1;
+                            }
+                            Err(e) => {
+                                println!(
+                                    "  ✗ {} ({}) — {}",
+                                    &peer.id[..8.min(peer.id.len())],
+                                    peer.addr,
+                                    e
+                                );
+                                failed += 1;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!(
+                            "  ✗ {} ({}) — invalid address: {}",
+                            &peer.id[..8.min(peer.id.len())],
+                            peer.addr,
+                            e
+                        );
+                        failed += 1;
+                    }
+                }
+            }
+
+            println!(
+                "\nResults: {}/{} reachable, {}/{} failed",
+                reachable,
+                peers.len(),
+                failed,
+                peers.len()
+            );
             Ok(())
         }
         BootstrapAction::Reset => {
@@ -508,22 +629,61 @@ async fn cmd_peers(
             }
             Ok(())
         }
-        PeersAction::Add { .. } => {
-            println!("Peer add: not yet implemented (requires running node)");
+        PeersAction::Add { addr } => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                let body = serde_json::json!({"addr": addr}).to_string();
+                if let Ok(resp) = api_client::api_post(port, "/peers/add", &body) {
+                    let v: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+                    if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        println!("Peer {} added.", addr);
+                    } else {
+                        eprintln!("Failed to add peer: {}", addr);
+                    }
+                    return Ok(());
+                }
+            }
+            println!("Peer add: node is not running (start the node first)");
             Ok(())
         }
-        PeersAction::Ban { .. } => {
-            println!("Peer ban: not yet implemented (Phase 9)");
+        PeersAction::Ban { peer_id } => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                let body = serde_json::json!({"peer_id": peer_id}).to_string();
+                if let Ok(resp) = api_client::api_post(port, "/peers/ban", &body) {
+                    let v: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+                    if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        println!("Peer {} banned.", peer_id);
+                    } else {
+                        eprintln!("Failed to ban peer: {}", peer_id);
+                    }
+                    return Ok(());
+                }
+            }
+            println!("Peer ban: node is not running (start the node first)");
             Ok(())
         }
-        PeersAction::Unban { .. } => {
-            println!("Peer unban: not yet implemented (Phase 9)");
+        PeersAction::Unban { peer_id } => {
+            // Try API first
+            if let Some(port) = api_client::api_is_reachable(data_dir) {
+                let body = serde_json::json!({"peer_id": peer_id}).to_string();
+                if let Ok(resp) = api_client::api_post(port, "/peers/unban", &body) {
+                    let v: serde_json::Value = serde_json::from_str(&resp).unwrap_or_default();
+                    if v.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                        println!("Peer {} unbanned.", peer_id);
+                    } else {
+                        eprintln!("Failed to unban peer: {}", peer_id);
+                    }
+                    return Ok(());
+                }
+            }
+            println!("Peer unban: node is not running (start the node first)");
             Ok(())
         }
     }
 }
 
-fn cmd_role(action: RoleAction) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn cmd_role(action: RoleAction, data_dir: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
         RoleAction::List => {
             println!("Available roles:");
@@ -534,21 +694,63 @@ fn cmd_role(action: RoleAction) -> Result<(), Box<dyn std::error::Error + Send +
         }
         RoleAction::Set { role } => {
             let r = NodeRole::from_str(&role).ok_or_else(|| format!("Unknown role: {}", role))?;
-            println!("Role set to: {}", r);
+            std::fs::create_dir_all(data_dir)?;
+            let mut cfg = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            cfg.node.role = role.clone();
+            config::save_config(data_dir, &cfg)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            println!("Role set to: {} (saved to config.toml)", r);
             Ok(())
         }
         RoleAction::Add { role } => {
             let r = NodeRole::from_str(&role).ok_or_else(|| format!("Unknown role: {}", role))?;
-            println!("Role added: {}", r);
+            std::fs::create_dir_all(data_dir)?;
+            let mut cfg = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            // Append role (comma-separated in the role string)
+            let mut roles: Vec<String> = cfg.node.role.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            let role_str = r.to_string();
+            if !roles.contains(&role_str) {
+                roles.push(role_str.clone());
+                cfg.node.role = roles.join(",");
+                config::save_config(data_dir, &cfg)
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+                println!("Role added: {} (saved to config.toml)", r);
+            } else {
+                println!("Role {} already present", r);
+            }
             Ok(())
         }
         RoleAction::Remove { role } => {
             let r = NodeRole::from_str(&role).ok_or_else(|| format!("Unknown role: {}", role))?;
-            println!("Role removed: {}", r);
+            std::fs::create_dir_all(data_dir)?;
+            let mut cfg = config::load_config(data_dir)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            let role_str = r.to_string();
+            let mut roles: Vec<String> = cfg.node.role.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty() && s != &role_str).collect();
+            if roles.is_empty() {
+                roles.push("light".to_string());
+            }
+            cfg.node.role = roles.join(",");
+            config::save_config(data_dir, &cfg)
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
+            println!("Role removed: {} (saved to config.toml)", r);
             Ok(())
         }
         RoleAction::Autodetect => {
-            println!("AutoNAT detection: not yet implemented (requires running node)");
+            let result = crate::node::autonat::probe(7744, std::time::Duration::from_secs(5));
+            if result.is_public {
+                println!("✓ Node appears publicly reachable.");
+                if let Some(ref addr) = result.public_addr {
+                    println!("  Public address: {}", addr);
+                }
+                println!("  Recommendation: full or archive role");
+            } else {
+                println!("✗ Node is not publicly reachable.");
+                println!("  Reason: {}", result.reason);
+                println!("  Recommendation: light role (no inbound connections needed)");
+            }
             Ok(())
         }
     }
@@ -943,9 +1145,9 @@ fn cmd_record(
                 .map_err(|e| format!("read {}: {}", file.display(), e))?;
             let record: crate::model::ContentRecord =
                 serde_json::from_str(&json_str).map_err(|e| format!("parse record JSON: {}", e))?;
-            let record = crate::sanitize::sanitize_record(&record)
+            let mut record = crate::sanitize::sanitize_record(&record)
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })?;
-            let result = store.insert_record(&record)?;
+            let result = store.insert_record(&mut record)?;
             match result {
                 storage::records::InsertResult::Inserted => {
                     println!("Record {} inserted.", record.id)
@@ -975,7 +1177,7 @@ fn cmd_record(
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
-                let ann = crate::model::Announcement {
+                let mut ann = crate::model::Announcement {
                     record_id: record.id.clone(),
                     source_hash: record.source_hash.clone(),
                     schema: record.schema.clone(),
@@ -988,7 +1190,7 @@ fn cmd_record(
                     },
                     sig: "".to_string(),
                 };
-                store.insert_announcement(&ann)?;
+                store.insert_announcement(&mut ann)?;
                 println!("Record {} announced.", id);
                 Ok(())
             }
@@ -1114,12 +1316,24 @@ fn cmd_search(
     Ok(())
 }
 
-/// Minimal URL encoding for query parameters.
+/// RFC 3986 compliant URL encoding for query parameters.
+/// Encodes all characters except unreserved set: A-Z a-z 0-9 - _ . ~
 fn url_encode(s: &str) -> String {
-    s.replace(' ', "+")
-        .replace('#', "%23")
-        .replace('&', "%26")
-        .replace('=', "%3D")
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            b' ' => {
+                result.push_str("+");
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
 }
 
 async fn cmd_scraper(
@@ -1343,20 +1557,114 @@ use_defaults = true
     .to_string()
 }
 
+fn default_search_providers_toml() -> String {
+    r#"# {data_dir}/search_providers.toml
+# Configure keyword discovery search providers.
+# Each provider defines a remote API endpoint that can be queried
+# for content matching specific keywords.
+
+[[providers]]
+name = "default"
+enabled = false
+endpoint = "https://search.dsearch.network/v1"
+"#
+    .to_string()
+}
+
 fn cmd_tray(
     action: TrayAction,
     data_dir: &Path,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     match action {
         TrayAction::Start => {
-            ui::run_ui(data_dir.to_path_buf())?;
+            // Launch the UI with a hidden window — only the tray icon is visible.
+            // The eframe viewport builder supports `with_visible(false)`.
+            ui::run_ui_tray(data_dir.to_path_buf())?;
             Ok(())
         }
         TrayAction::Stop => {
-            println!("Tray stop: not yet implemented (requires running node)");
+            // Send shutdown signal to the running node
+            let shutdown_path = data_dir.join("node.shutdown");
+            std::fs::write(&shutdown_path, "stop")?;
+            println!("Stop signal sent to tray/node.");
             Ok(())
         }
     }
+}
+
+fn cmd_log(
+    action: LogAction,
+    data_dir: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    match action {
+        LogAction::Tail { level } => {
+            let log_path = data_dir.join("dsearch.log");
+            if !log_path.exists() {
+                println!("No log file found at {}. Is the node running?", log_path.display());
+                return Ok(());
+            }
+
+            let level_filter = match level.as_str() {
+                "trace" => 0,
+                "debug" => 1,
+                "info" => 2,
+                "warn" => 3,
+                "error" => 4,
+                _ => 2,
+            };
+
+            // Read existing content and print the last 50 lines
+            let contents = std::fs::read_to_string(&log_path)?;
+            let lines: Vec<&str> = contents.lines().collect();
+            let start = lines.len().saturating_sub(50);
+            for line in &lines[start..] {
+                if log_line_matches_level(line, level_filter) {
+                    println!("{}", line);
+                }
+            }
+
+            // Tail new lines (poll every 500ms for up to 5 minutes)
+            let mut offset = contents.len();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                if std::time::Instant::now() > deadline {
+                    break;
+                }
+                let contents = match std::fs::read_to_string(&log_path) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                if contents.len() > offset {
+                    let new_content = &contents[offset..];
+                    for line in new_content.lines() {
+                        if log_line_matches_level(line, level_filter) {
+                            println!("{}", line);
+                        }
+                    }
+                    offset = contents.len();
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn log_line_matches_level(line: &str, min_level: usize) -> bool {
+    let line_level = if line.contains("TRACE") {
+        0
+    } else if line.contains("DEBUG") {
+        1
+    } else if line.contains("INFO") {
+        2
+    } else if line.contains("WARN") {
+        3
+    } else if line.contains("ERROR") {
+        4
+    } else {
+        2 // Default to info level for unrecognized lines
+    };
+    line_level >= min_level
 }
 
 fn cmd_service(

@@ -11,6 +11,13 @@ pub fn read_api_port(data_dir: &Path) -> Option<u16> {
     contents.trim().parse().ok()
 }
 
+/// Make a GET request to the local API using the data_dir to find the port.
+/// Returns None if the API is not reachable.
+pub fn api_get_from_dir(data_dir: &Path, path: &str) -> Option<String> {
+    let port = read_api_port(data_dir)?;
+    api_get(port, path).ok()
+}
+
 /// Check if the local API is reachable.
 pub fn api_is_reachable(data_dir: &Path) -> Option<u16> {
     let port = read_api_port(data_dir)?;

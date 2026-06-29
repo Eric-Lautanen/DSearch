@@ -6,6 +6,7 @@ use tracing::{debug, info, warn};
 
 /// Run the expiry sweeper as a background tokio task.
 /// Periodically scans for expired records and announcements and removes them.
+/// Uses spawn_blocking to avoid blocking the async runtime with redb write transactions.
 pub fn start_expiry_sweeper(db: Arc<Database>, interval: Duration) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval_timer = time::interval(interval);
@@ -17,32 +18,39 @@ pub fn start_expiry_sweeper(db: Arc<Database>, interval: Duration) -> tokio::tas
                 .unwrap_or_default()
                 .as_secs();
 
-            match crate::storage::records::delete_expired_records(&db, now) {
-                Ok(count) if count > 0 => {
-                    info!("Expiry sweeper: removed {} expired records", count);
+            let db_clone = db.clone();
+            tokio::task::spawn_blocking(move || {
+                match crate::storage::records::delete_expired_records(&db_clone, now) {
+                    Ok(count) if count > 0 => {
+                        info!("Expiry sweeper: removed {} expired records", count);
+                    }
+                    Ok(_) => {
+                        debug!("Expiry sweeper: no expired records");
+                    }
+                    Err(e) => {
+                        warn!("Expiry sweeper: error removing expired records: {}", e);
+                    }
                 }
-                Ok(_) => {
-                    debug!("Expiry sweeper: no expired records");
-                }
-                Err(e) => {
-                    warn!("Expiry sweeper: error removing expired records: {}", e);
-                }
-            }
 
-            match crate::storage::records::delete_expired_announcements(&db, now) {
-                Ok(count) if count > 0 => {
-                    info!("Expiry sweeper: removed {} expired announcements", count);
+                match crate::storage::records::delete_expired_announcements(&db_clone, now) {
+                    Ok(count) if count > 0 => {
+                        info!("Expiry sweeper: removed {} expired announcements", count);
+                    }
+                    Ok(_) => {
+                        debug!("Expiry sweeper: no expired announcements");
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Expiry sweeper: error removing expired announcements: {}",
+                            e
+                        );
+                    }
                 }
-                Ok(_) => {
-                    debug!("Expiry sweeper: no expired announcements");
-                }
-                Err(e) => {
-                    warn!(
-                        "Expiry sweeper: error removing expired announcements: {}",
-                        e
-                    );
-                }
-            }
+            })
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Expiry sweeper: spawn_blocking task panicked: {}", e);
+            });
         }
     })
 }
@@ -106,7 +114,7 @@ mod tests {
     fn sweep_once_removes_expired() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 100); // expires_at in the past
-        crate::storage::records::insert_record(&db, &record).unwrap();
+        crate::storage::records::insert_record(&db, &record, None).unwrap();
 
         let (records, _anns) = sweep_once(&db).unwrap();
         assert_eq!(records, 1);
@@ -119,7 +127,7 @@ mod tests {
     fn sweep_once_keeps_unexpired() {
         let (_dir, db) = open_test_db();
         let record = make_record("r1", "sh1", 1000, 9999999999); // far future
-        crate::storage::records::insert_record(&db, &record).unwrap();
+        crate::storage::records::insert_record(&db, &record, None).unwrap();
 
         let (records, _) = sweep_once(&db).unwrap();
         assert_eq!(records, 0);

@@ -100,3 +100,94 @@ pub struct NodeInfo {
 pub struct Goodbye {
     pub reason: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Announce {
+    pub record_id: String,
+    pub source_hash: String,
+    pub schema: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub holder_addr: String,
+    pub expires_at: u64,
+    #[serde(default)]
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnounceAck {
+    pub record_id: String,
+    pub accepted: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchQuery {
+    pub query: String,
+    #[serde(default)]
+    pub schema: Option<String>,
+    #[serde(default = "default_search_limit")]
+    pub limit: u32,
+    pub requester_id: String,
+    #[serde(default)]
+    pub reply_to: String,
+}
+
+fn default_search_limit() -> u32 {
+    20
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchReply {
+    pub query: String,
+    pub results: Vec<SearchResultEntry>,
+    pub from_node: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SearchResultEntry {
+    pub record_id: String,
+    pub schema: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub holder_addr: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordFetch {
+    pub record_id: String,
+    pub requester_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordReply {
+    pub record_id: String,
+    #[serde(default)]
+    pub record_json: Option<String>,
+    #[serde(default)]
+    pub not_found: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicatePush {
+    pub record_id: String,
+    pub record_json: String,
+    pub source_hash: String,
+    #[serde(default)]
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplicateAck {
+    pub record_id: String,
+    pub accepted: bool,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerExchange {
+    pub peers: Vec<NodeInfo>,
+}

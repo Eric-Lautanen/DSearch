@@ -2,6 +2,7 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod async_api;
 mod bootstrap_panel;
 mod onboarding;
 mod search;
@@ -37,6 +38,9 @@ pub struct DsearchApp {
 
     // Tray
     tray: TrayState,
+
+    // Async API helper — runs API calls on a background thread
+    async_api: async_api::AsyncApi,
 }
 
 /// Status bar data — refreshed from the API each frame.
@@ -56,16 +60,14 @@ pub struct ApiHelper {
 
 impl ApiHelper {
     pub fn api_get(&self, path: &str) -> Option<String> {
-        let port_path = self.data_dir.join("api.port");
-        let contents = std::fs::read_to_string(port_path).ok()?;
-        let port: u16 = contents.trim().parse().ok()?;
-        crate::cli::api_client::api_get(port, path).ok()
+        crate::cli::api_client::api_get_from_dir(&self.data_dir, path)
     }
 }
 
 impl DsearchApp {
     pub fn new(data_dir: PathBuf) -> Self {
         let needs_onboarding = !data_dir.join("identity.key").exists();
+        let async_api = async_api::AsyncApi::new(data_dir.clone());
 
         Self {
             data_dir,
@@ -81,6 +83,7 @@ impl DsearchApp {
             settings: settings::SettingsPanel::default(),
             status: StatusBar::default(),
             tray: TrayState::default(),
+            async_api,
         }
     }
 
@@ -91,32 +94,49 @@ impl DsearchApp {
     }
 
     fn refresh_status(&mut self) {
-        let api = self.api();
-        if let Some(body) = api.api_get("/node") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                self.status.role = v
-                    .get("role")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("light")
-                    .to_string();
-                self.status.peers = v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-                self.status.records =
-                    v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            }
-        }
-        if let Some(body) = api.api_get("/storage") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                let size_bytes = v.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
-                self.status.tier2_size_mb = size_bytes as f64 / (1024.0 * 1024.0);
-            }
-        }
-        if let Some(body) = api.api_get("/health") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(id) = v.get("node_id").and_then(|v| v.as_str()) {
-                    *self.node_id.lock().unwrap() = id.to_string();
+        // Poll for completed async API responses
+        for (path, body) in self.async_api.poll() {
+            match path.as_str() {
+                "/node" => {
+                    if let Some(b) = body {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
+                            self.status.role = v
+                                .get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("light")
+                                .to_string();
+                            self.status.peers = v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            self.status.records =
+                                v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                        }
+                    }
                 }
+                "/storage" => {
+                    if let Some(b) = body {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
+                            let size_bytes = v.get("size_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                            self.status.tier2_size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                        }
+                    }
+                }
+                "/health" => {
+                    if let Some(b) = body {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&b) {
+                            if let Some(id) = v.get("node_id").and_then(|v| v.as_str()) {
+                                *self.node_id.lock().unwrap() = id.to_string();
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
         }
+
+        // Fire off async requests for status data (throttled by ensure_requested)
+        self.async_api.ensure_requested("/node", &self.data_dir);
+        self.async_api.ensure_requested("/storage", &self.data_dir);
+        self.async_api.ensure_requested("/health", &self.data_dir);
+
         *self.api_port.lock().unwrap() = {
             let port_path = self.data_dir.join("api.port");
             std::fs::read_to_string(port_path)
@@ -230,6 +250,24 @@ pub fn run_ui(data_dir: PathBuf) -> Result<(), Box<dyn std::error::Error + Send 
             .with_inner_size([1024.0, 700.0])
             .with_min_inner_size([640.0, 400.0])
             .with_app_id("dsearch"),
+        renderer: eframe::Renderer::Glow,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "DSearch",
+        options,
+        Box::new(|_cc| Ok(Box::new(DsearchApp::new(data_dir)))),
+    )
+    .map_err(|e| format!("eframe error: {}", e).into())
+}
+
+/// Launch the egui UI in tray mode — hidden window with only the tray icon.
+pub fn run_ui_tray(data_dir: PathBuf) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_app_id("dsearch")
+            .with_visible(false),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

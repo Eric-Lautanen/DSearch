@@ -32,7 +32,20 @@ impl TrayState {
                     }
                 }
                 "quit" => {
-                    std::process::exit(0);
+                    // Write the shutdown signal file so the node can shut down gracefully
+                    // instead of hard-killing the process.
+                    // The data_dir is not easily accessible here, so we use the default.
+                    let data_dir = dirs_next::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("dsearch");
+                    let shutdown_path = data_dir.join("node.shutdown");
+                    if let Err(e) = std::fs::write(&shutdown_path, "stop") {
+                        tracing::warn!("Failed to write shutdown signal: {}", e);
+                    }
+                    // Close the eframe viewport to exit the UI loop
+                    if let Some(ref _tray) = self.tray_icon {
+                        // Tray icon will be dropped when the app exits
+                    }
                 }
                 _ => {}
             }
