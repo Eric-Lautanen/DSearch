@@ -19,6 +19,20 @@ pub struct OnboardingState {
     bootstrap_peer_count: usize,
     identity_generated: bool,
     custom_data_dir: String,
+    identity_error: String,
+    // Bootstrap step: cache peer list and test results so we don't block every frame
+    bootstrap_peers: Vec<BootstrapPeerInfo>,
+    bootstrap_peers_loaded: bool,
+    bootstrap_test_results: Vec<(String, bool, String)>,
+    // Manual peer add
+    new_peer_id: String,
+    new_peer_addr: String,
+}
+
+#[derive(Debug, Clone)]
+struct BootstrapPeerInfo {
+    id: String,
+    addr: String,
 }
 
 impl OnboardingState {
@@ -36,11 +50,22 @@ impl OnboardingState {
             bootstrap_peer_count: 0,
             identity_generated: false,
             custom_data_dir: default_dir.to_string_lossy().to_string(),
+            identity_error: String::new(),
+            bootstrap_peers: Vec::new(),
+            bootstrap_peers_loaded: false,
+            bootstrap_test_results: Vec::new(),
+            new_peer_id: String::new(),
+            new_peer_addr: String::new(),
         }
     }
 
     pub fn is_complete(&self) -> bool {
         self.step == OnboardingStep::Done
+    }
+
+    /// Return the data_dir chosen during onboarding (may differ from the default).
+    pub fn data_dir(&self) -> &PathBuf {
+        &self.data_dir
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui, _data_dir: &PathBuf) {
@@ -148,26 +173,42 @@ impl OnboardingState {
             ui.label("Your node needs a unique cryptographic identity.");
             ui.label("This Ed25519 keypair identifies you on the network and");
             ui.label("is used to sign content records and announcements.");
-            ui.add_space(16.0);
+            ui.add_space(8.0);
+
+            if !self.identity_error.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xF4, 0x43, 0x36),
+                    &self.identity_error,
+                );
+                ui.add_space(8.0);
+            }
 
             ui.with_layout(
                 egui::Layout::right_to_left(egui::Align::BOTTOM),
                 |ui: &mut egui::Ui| {
                     if ui.button("Generate Identity →").clicked() {
-                        if let Ok((signing_key, node_id, cert_der, key_der)) =
-                            crate::proto::cert::generate_identity()
-                        {
-                            std::fs::create_dir_all(&self.data_dir).ok();
-                            if crate::proto::cert::save_identity(
-                                &self.data_dir,
-                                &signing_key,
-                                &cert_der,
-                                &key_der,
-                            )
-                            .is_ok()
-                            {
-                                self.node_id = node_id;
-                                self.identity_generated = true;
+                        self.identity_error.clear();
+                        match crate::proto::cert::generate_identity() {
+                            Ok((signing_key, node_id, cert_der, key_der)) => {
+                                std::fs::create_dir_all(&self.data_dir).ok();
+                                match crate::proto::cert::save_identity(
+                                    &self.data_dir,
+                                    &signing_key,
+                                    &cert_der,
+                                    &key_der,
+                                ) {
+                                    Ok(()) => {
+                                        self.node_id = node_id;
+                                        self.identity_generated = true;
+                                    }
+                                    Err(e) => {
+                                        self.identity_error =
+                                            format!("Failed to save identity: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.identity_error = format!("Failed to generate identity: {}", e);
                             }
                         }
                     }
@@ -295,52 +336,104 @@ impl OnboardingState {
         ui.add_space(8.0);
 
         if !self.bootstrap_connected {
-            ui.label("Connecting to bootstrap peers…");
-            ui.add_space(8.0);
-            ui.spinner();
+            // Load bootstrap peers once (not every frame)
+            if !self.bootstrap_peers_loaded {
+                let peers = crate::bootstrap::resolver::resolve_bootstrap_peers(&self.data_dir);
+                self.bootstrap_peers = peers
+                    .iter()
+                    .map(|p| BootstrapPeerInfo {
+                        id: p.id.clone(),
+                        addr: p.addr.clone(),
+                    })
+                    .collect();
+                self.bootstrap_peers_loaded = true;
+            }
+
+            ui.label("Bootstrap peers provide your entry point into the network.");
             ui.add_space(8.0);
 
-            let peers = crate::bootstrap::resolver::resolve_bootstrap_peers(&self.data_dir);
-            if !peers.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("Found {} bootstrap peer(s)", peers.len())).small(),
-                );
-
-                // Show each peer's reachability status
-                ui.add_space(4.0);
-                for peer in &peers {
-                    let addr_display = &peer.addr;
-                    let reachable = std::net::TcpStream::connect_timeout(
-                        &addr_display.parse().unwrap_or("0.0.0.0:0".parse().unwrap()),
-                        std::time::Duration::from_secs(2),
-                    )
-                    .is_ok();
-                    let status = if reachable { "✓" } else { "✗" };
-                    let color = if reachable {
-                        egui::Color32::from_rgb(0x4C, 0xAF, 0x50)
-                    } else {
-                        egui::Color32::from_rgb(0xF4, 0x43, 0x36)
-                    };
-                    ui.horizontal(|ui: &mut egui::Ui| {
-                        ui.label(egui::RichText::new(status).color(color));
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{} ({})",
-                                &peer.id[..8.min(peer.id.len())],
-                                peer.addr
-                            ))
-                            .small(),
-                        );
-                    });
-                }
-            } else {
+            if self.bootstrap_peers.is_empty() {
                 ui.label(
                     egui::RichText::new("No bootstrap peers found.")
                         .color(egui::Color32::from_rgb(0xFF, 0x98, 0x00)),
                 );
+            } else {
+                ui.label(
+                    egui::RichText::new(format!("Found {} bootstrap peer(s)", self.bootstrap_peers.len()))
+                        .small(),
+                );
+
+                // Show test results if available
+                if !self.bootstrap_test_results.is_empty() {
+                    ui.add_space(4.0);
+                    for (addr, reachable, detail) in &self.bootstrap_test_results {
+                        let status = if *reachable { "✓" } else { "✗" };
+                        let color = if *reachable {
+                            egui::Color32::from_rgb(0x4C, 0xAF, 0x50)
+                        } else {
+                            egui::Color32::from_rgb(0xF4, 0x43, 0x36)
+                        };
+                        ui.horizontal(|ui: &mut egui::Ui| {
+                            ui.label(egui::RichText::new(status).color(color));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} ({})",
+                                    &addr,
+                                    detail
+                                ))
+                                .small(),
+                            );
+                        });
+                    }
+                } else {
+                    // Show peer list without TCP testing (avoids blocking UI)
+                    ui.add_space(4.0);
+                    for peer in &self.bootstrap_peers {
+                        ui.horizontal(|ui: &mut egui::Ui| {
+                            ui.label(egui::RichText::new("•").color(egui::Color32::GRAY));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} ({})",
+                                    &peer.id[..8.min(peer.id.len())],
+                                    peer.addr
+                                ))
+                                .small(),
+                            );
+                        });
+                    }
+                }
             }
 
             ui.add_space(12.0);
+
+            // Test connectivity button (runs TCP connects — brief block but user-initiated)
+            ui.horizontal(|ui: &mut egui::Ui| {
+                if ui.button("🔍 Test Connectivity").clicked() {
+                    self.bootstrap_test_results.clear();
+                    for peer in &self.bootstrap_peers {
+                        let result = std::net::TcpStream::connect_timeout(
+                            &peer.addr.parse().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap()),
+                            std::time::Duration::from_secs(2),
+                        );
+                        match result {
+                            Ok(_) => self.bootstrap_test_results.push((
+                                peer.addr.clone(),
+                                true,
+                                "reachable".to_string(),
+                            )),
+                            Err(e) => self.bootstrap_test_results.push((
+                                peer.addr.clone(),
+                                false,
+                                e.to_string(),
+                            )),
+                        }
+                    }
+                }
+            });
+
+            ui.add_space(12.0);
+
+            // Manual peer add
             ui.group(|ui: &mut egui::Ui| {
                 ui.label(egui::RichText::new("Add a peer manually").strong());
                 ui.add_space(4.0);
@@ -351,6 +444,32 @@ impl OnboardingState {
                     .small()
                     .color(egui::Color32::GRAY),
                 );
+                ui.add_space(4.0);
+                ui.horizontal(|ui: &mut egui::Ui| {
+                    ui.label("ID:");
+                    ui.text_edit_singleline(&mut self.new_peer_id);
+                });
+                ui.horizontal(|ui: &mut egui::Ui| {
+                    ui.label("Addr:");
+                    ui.text_edit_singleline(&mut self.new_peer_addr);
+                });
+                ui.add_space(4.0);
+                if ui.button("Add Peer").clicked()
+                    && !self.new_peer_id.is_empty()
+                    && !self.new_peer_addr.is_empty()
+                    && crate::bootstrap::resolver::write_bootstrap_peer(
+                        &self.data_dir,
+                        &self.new_peer_id,
+                        &self.new_peer_addr,
+                        "added during onboarding",
+                    )
+                    .is_ok()
+                {
+                    self.bootstrap_peers_loaded = false; // Reload peers
+                    self.bootstrap_test_results.clear();
+                    self.new_peer_id.clear();
+                    self.new_peer_addr.clear();
+                }
             });
 
             ui.add_space(24.0);
@@ -362,9 +481,10 @@ impl OnboardingState {
                         self.bootstrap_connected = true;
                         self.step = OnboardingStep::Done;
                     }
-                    if ui.button("Retry").clicked() {
-                        self.bootstrap_connected = true;
+                    if ui.button("Continue →").clicked() {
                         self.write_bootstrap_defaults();
+                        self.bootstrap_connected = true;
+                        self.bootstrap_peer_count = self.bootstrap_peers.len();
                         self.step = OnboardingStep::Done;
                     }
                     if ui.button("← Back").clicked() {

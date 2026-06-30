@@ -7,6 +7,7 @@ pub struct SearchPanel {
     results: Vec<SearchResult>,
     searching: bool,
     last_query: String,
+    error: String,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +48,26 @@ impl SearchPanel {
                 ui.spinner();
                 ui.add_space(8.0);
                 ui.label("Searching…");
+            });
+        } else if !self.error.is_empty() {
+            ui.vertical_centered(|ui: &mut egui::Ui| {
+                ui.add_space(60.0);
+                ui.label(egui::RichText::new("⚠").size(48.0));
+                ui.add_space(8.0);
+                ui.heading("Search failed");
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(&self.error)
+                        .color(egui::Color32::from_rgb(0xF4, 0x43, 0x36)),
+                );
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Make sure the node is running and the API is reachable.",
+                    )
+                    .color(egui::Color32::GRAY)
+                    .small(),
+                );
             });
         } else if self.results.is_empty() && self.last_query.is_empty() {
             ui.vertical_centered(|ui: &mut egui::Ui| {
@@ -129,50 +150,57 @@ impl SearchPanel {
             return;
         }
         self.searching = true;
+        self.error.clear();
         self.last_query = self.query.clone();
 
         let query = self.query.clone();
         let path = format!("/search?q={}&limit=20", query.replace(' ', "+"));
 
-        if let Some(body) = api.api_get(&path) {
-            self.results.clear();
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
-                    for r in results {
-                        let id = r
-                            .get("id")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let schema = r
-                            .get("schema")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let source_url = r
-                            .get("source_url")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let body_text = r.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                        let snippet: String = body_text.chars().take(200).collect();
-                        let title = r
-                            .get("tags")
-                            .and_then(|t| t.as_array())
-                            .and_then(|a| a.first())
-                            .and_then(|v| v.as_str())
-                            .unwrap_or(&id[..16.min(id.len())])
-                            .to_string();
+        match api.api_get_result(&path) {
+            Ok(body) => {
+                self.results.clear();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    if let Some(results) = v.get("results").and_then(|r| r.as_array()) {
+                        for r in results {
+                            let id = r
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let schema = r
+                                .get("schema")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let source_url = r
+                                .get("source_url")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string();
+                            let body_text = r.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                            let snippet: String = body_text.chars().take(200).collect();
+                            let title = r
+                                .get("tags")
+                                .and_then(|t| t.as_array())
+                                .and_then(|a| a.first())
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(&id[..16.min(id.len())])
+                                .to_string();
 
-                        self.results.push(SearchResult {
-                            id,
-                            schema,
-                            source_url,
-                            body_snippet: snippet,
-                            title,
-                        });
+                            self.results.push(SearchResult {
+                                id,
+                                schema,
+                                source_url,
+                                body_snippet: snippet,
+                                title,
+                            });
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                self.results.clear();
+                self.error = e;
             }
         }
 

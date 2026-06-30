@@ -7,7 +7,6 @@ pub struct BootstrapPanel {
     new_peer_addr: String,
     new_peer_note: String,
     test_results: Vec<(String, bool, String)>,
-    testing: bool,
 }
 
 impl BootstrapPanel {
@@ -103,9 +102,6 @@ impl BootstrapPanel {
                     }
                 }
             }
-            if self.testing {
-                ui.spinner();
-            }
         });
 
         if !self.test_results.is_empty() {
@@ -158,17 +154,22 @@ impl BootstrapPanel {
             if ui.button("Add Peer").clicked()
                 && !self.new_peer_id.is_empty()
                 && !self.new_peer_addr.is_empty()
-                && crate::bootstrap::resolver::write_bootstrap_peer(
+            {
+                match crate::bootstrap::resolver::write_bootstrap_peer(
                     &api.data_dir,
                     &self.new_peer_id,
                     &self.new_peer_addr,
                     &self.new_peer_note,
-                )
-                .is_ok()
-            {
-                self.new_peer_id.clear();
-                self.new_peer_addr.clear();
-                self.new_peer_note.clear();
+                ) {
+                    Ok(()) => {
+                        self.new_peer_id.clear();
+                        self.new_peer_addr.clear();
+                        self.new_peer_note.clear();
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to add bootstrap peer: {}", e);
+                    }
+                }
             }
         });
 

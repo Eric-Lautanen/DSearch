@@ -467,6 +467,7 @@ fn handle_node(node_id: &str, config: &DsearchConfig, store: &Arc<Store>) -> Htt
         "protocol_version": config.node.min_protocol_version,
         "peers": 0,
         "records": record_count,
+        "bandwidth_limit_mbps": config.relay.bandwidth_limit_mbps,
     });
     HttpResponse::json(&body.to_string()).with_node_headers(node_id)
 }

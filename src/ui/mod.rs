@@ -62,12 +62,21 @@ impl ApiHelper {
     pub fn api_get(&self, path: &str) -> Option<String> {
         crate::cli::api_client::api_get_from_dir(&self.data_dir, path)
     }
+
+    /// Like `api_get` but returns a `Result` with an error message when the API is unreachable.
+    pub fn api_get_result(&self, path: &str) -> Result<String, String> {
+        crate::cli::api_client::api_get_from_dir(&self.data_dir, path)
+            .ok_or_else(|| "Node API is not reachable. Is the node running?".to_string())
+    }
 }
 
 impl DsearchApp {
     pub fn new(data_dir: PathBuf) -> Self {
         let needs_onboarding = !data_dir.join("identity.key").exists();
         let async_api = async_api::AsyncApi::new(data_dir.clone());
+
+        let mut tray = TrayState::default();
+        tray.set_data_dir(data_dir.clone());
 
         Self {
             data_dir,
@@ -82,7 +91,7 @@ impl DsearchApp {
             search: search::SearchPanel::default(),
             settings: settings::SettingsPanel::default(),
             status: StatusBar::default(),
-            tray: TrayState::default(),
+            tray,
             async_api,
         }
     }
@@ -109,6 +118,11 @@ impl DsearchApp {
                                 v.get("peers").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
                             self.status.records =
                                 v.get("records").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            // Bandwidth limit from config (not a live metric)
+                            self.status.bandwidth_mbps = v
+                                .get("bandwidth_limit_mbps")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0) as f64;
                         }
                     }
                 }
@@ -154,12 +168,16 @@ impl eframe::App for DsearchApp {
         self.refresh_status();
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // If onboarding is active, show the wizard instead of the main UI
         if let Some(ref mut onboarding) = self.onboarding {
             onboarding.ui(ui, &self.data_dir);
             if onboarding.is_complete() {
+                // Use the data_dir the user chose during onboarding
+                self.data_dir = onboarding.data_dir().clone();
                 self.onboarding = None;
+                // Also update the tray's data_dir
+                self.tray.set_data_dir(self.data_dir.clone());
             }
             return;
         }
@@ -215,7 +233,7 @@ impl eframe::App for DsearchApp {
                 ui.separator();
                 ui.label(
                     egui::RichText::new(format!(
-                        "Bandwidth: {:.0} Mbps",
+                        "Bandwidth limit: {:.0} Mbps",
                         self.status.bandwidth_mbps
                     ))
                     .small(),
@@ -241,7 +259,7 @@ impl eframe::App for DsearchApp {
         });
 
         // Tray icon management
-        self.tray.update(frame);
+        self.tray.update(ui.ctx());
     }
 }
 

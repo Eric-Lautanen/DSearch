@@ -1,3 +1,4 @@
+use eframe::egui;
 use tray_icon::menu::MenuEvent;
 use tray_icon::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -10,11 +11,17 @@ pub struct TrayState {
     tray_icon: Option<TrayIcon>,
     paused: bool,
     initialized: bool,
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl TrayState {
+    /// Set the data_dir so tray actions (quit, etc.) can find the node files.
+    pub fn set_data_dir(&mut self, data_dir: std::path::PathBuf) {
+        self.data_dir = Some(data_dir);
+    }
+
     /// Process tray events each frame.
-    pub fn update(&mut self, _frame: &mut eframe::Frame) {
+    pub fn update(&mut self, ctx: &egui::Context) {
         if !self.initialized {
             self.initialized = true;
             self.create_tray();
@@ -23,7 +30,11 @@ impl TrayState {
         // Process menu events
         if let Ok(event) = MenuEvent::receiver().try_recv() {
             match event.id().as_ref() {
-                "open" => {}
+                "open" => {
+                    // Show/focus the main window
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
                 "pause" => {
                     self.paused = !self.paused;
                     if let Some(ref tray) = self.tray_icon {
@@ -33,19 +44,17 @@ impl TrayState {
                 }
                 "quit" => {
                     // Write the shutdown signal file so the node can shut down gracefully
-                    // instead of hard-killing the process.
-                    // The data_dir is not easily accessible here, so we use the default.
-                    let data_dir = dirs_next::data_dir()
-                        .unwrap_or_else(|| std::path::PathBuf::from("."))
-                        .join("dsearch");
+                    let data_dir = self.data_dir.clone().unwrap_or_else(|| {
+                        dirs_next::data_dir()
+                            .unwrap_or_else(|| std::path::PathBuf::from("."))
+                            .join("dsearch")
+                    });
                     let shutdown_path = data_dir.join("node.shutdown");
                     if let Err(e) = std::fs::write(&shutdown_path, "stop") {
                         tracing::warn!("Failed to write shutdown signal: {}", e);
                     }
                     // Close the eframe viewport to exit the UI loop
-                    if let Some(ref _tray) = self.tray_icon {
-                        // Tray icon will be dropped when the app exits
-                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 _ => {}
             }

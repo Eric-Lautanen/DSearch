@@ -26,6 +26,9 @@ pub struct SettingsPanel {
     pub bootstrap: bootstrap_panel::BootstrapPanel,
     new_provider_name: String,
     new_provider_target: String,
+    add_provider_error: String,
+    add_job_error: String,
+    api_error: String,
 }
 
 impl SettingsPanel {
@@ -44,6 +47,15 @@ impl SettingsPanel {
         });
         ui.separator();
         ui.add_space(8.0);
+
+        // Show API error banner if present
+        if !self.api_error.is_empty() {
+            ui.colored_label(
+                egui::Color32::from_rgb(0xF4, 0x43, 0x36),
+                egui::RichText::new(format!("⚠ {}", &self.api_error)).small(),
+            );
+            ui.add_space(4.0);
+        }
 
         egui::ScrollArea::vertical().show(ui, |ui: &mut egui::Ui| match self.tab {
             SettingsTab::General => self.tab_general(ui, api),
@@ -83,50 +95,56 @@ impl SettingsPanel {
 
         ui.add_space(8.0);
 
-        if let Some(body) = api.api_get("/config") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                ui.group(|ui: &mut egui::Ui| {
-                    ui.label(egui::RichText::new("Node Configuration").strong());
-                    ui.add_space(4.0);
+        match api.api_get_result("/config") {
+            Ok(body) => {
+                self.api_error.clear();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    ui.group(|ui: &mut egui::Ui| {
+                        ui.label(egui::RichText::new("Node Configuration").strong());
+                        ui.add_space(4.0);
 
-                    let config_keys = [
-                        ("node.role", "Role"),
-                        ("node.max_connections", "Max Connections"),
-                        ("node.min_protocol_version", "Min Protocol Version"),
-                        ("node.ipv4", "IPv4"),
-                        ("node.ipv6", "IPv6"),
-                        ("api.port", "API Port"),
-                        ("storage.quota_mb", "Storage Quota (MB)"),
-                        ("storage.quota_action", "Quota Action"),
-                        ("storage.tier2_max_mb", "Tier 2 Max (MB)"),
-                        ("log.level", "Log Level"),
-                        ("log.output", "Log Output"),
-                        ("bootstrap.use_defaults", "Use Default Peers"),
-                    ];
+                        let config_keys = [
+                            ("node.role", "Role"),
+                            ("node.max_connections", "Max Connections"),
+                            ("node.min_protocol_version", "Min Protocol Version"),
+                            ("node.ipv4", "IPv4"),
+                            ("node.ipv6", "IPv6"),
+                            ("api.port", "API Port"),
+                            ("storage.quota_mb", "Storage Quota (MB)"),
+                            ("storage.quota_action", "Quota Action"),
+                            ("storage.tier2_max_mb", "Tier 2 Max (MB)"),
+                            ("log.level", "Log Level"),
+                            ("log.output", "Log Output"),
+                            ("bootstrap.use_defaults", "Use Default Peers"),
+                        ];
 
-                    for (key, label) in &config_keys {
-                        let parts: Vec<&str> = key.split('.').collect();
-                        if parts.len() == 2 {
-                            if let Some(section) = v.get(parts[0]) {
-                                if let Some(val) = section.get(parts[1]) {
-                                    ui.horizontal(|ui: &mut egui::Ui| {
-                                        ui.label(egui::RichText::new(*label).strong());
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui: &mut egui::Ui| {
-                                                ui.label(
-                                                    egui::RichText::new(val.to_string()).color(
-                                                        egui::Color32::from_rgb(0x64, 0xB5, 0xF6),
-                                                    ),
-                                                );
-                                            },
-                                        );
-                                    });
+                        for (key, label) in &config_keys {
+                            let parts: Vec<&str> = key.split('.').collect();
+                            if parts.len() == 2 {
+                                if let Some(section) = v.get(parts[0]) {
+                                    if let Some(val) = section.get(parts[1]) {
+                                        ui.horizontal(|ui: &mut egui::Ui| {
+                                            ui.label(egui::RichText::new(*label).strong());
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui: &mut egui::Ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(val.to_string()).color(
+                                                            egui::Color32::from_rgb(0x64, 0xB5, 0xF6),
+                                                        ),
+                                                    );
+                                                },
+                                            );
+                                        });
+                                    }
                                 }
                             }
                         }
-                    }
-                });
+                    });
+                }
+            }
+            Err(e) => {
+                self.api_error = e;
             }
         }
     }
@@ -135,38 +153,44 @@ impl SettingsPanel {
         ui.heading("Identity");
         ui.add_space(8.0);
 
-        if let Some(body) = api.api_get("/identity") {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                ui.group(|ui: &mut egui::Ui| {
-                    let node_id = v
-                        .get("node_id")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown");
-                    ui.label(egui::RichText::new("Node ID").strong());
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui: &mut egui::Ui| {
-                        ui.monospace(egui::RichText::new(node_id).small());
-                        if ui.small_button("📋 Copy").clicked() {
-                            ui.ctx().copy_text(node_id.to_string());
+        match api.api_get_result("/identity") {
+            Ok(body) => {
+                self.api_error.clear();
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                    ui.group(|ui: &mut egui::Ui| {
+                        let node_id = v
+                            .get("node_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown");
+                        ui.label(egui::RichText::new("Node ID").strong());
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui: &mut egui::Ui| {
+                            ui.monospace(egui::RichText::new(node_id).small());
+                            if ui.small_button("📋 Copy").clicked() {
+                                ui.ctx().copy_text(node_id.to_string());
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let has_identity = v
+                            .get("has_identity")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        if has_identity {
+                            ui.label(
+                                egui::RichText::new("✓ Identity key found")
+                                    .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("✗ No identity key found")
+                                    .color(egui::Color32::from_rgb(0xF4, 0x43, 0x36)),
+                            );
                         }
                     });
-                    ui.add_space(4.0);
-                    let has_identity = v
-                        .get("has_identity")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    if has_identity {
-                        ui.label(
-                            egui::RichText::new("✓ Identity key found")
-                                .color(egui::Color32::from_rgb(0x4C, 0xAF, 0x50)),
-                        );
-                    } else {
-                        ui.label(
-                            egui::RichText::new("✗ No identity key found")
-                                .color(egui::Color32::from_rgb(0xF4, 0x43, 0x36)),
-                        );
-                    }
-                });
+                }
+            }
+            Err(e) => {
+                self.api_error = e;
             }
         }
 
@@ -185,7 +209,8 @@ impl SettingsPanel {
         ui.heading("Gateway API");
         ui.add_space(8.0);
 
-        if let Some(body) = api.api_get("/config") {
+        if let Ok(body) = api.api_get_result("/config") {
+            self.api_error.clear();
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(gw) = v.get("gateway") {
                     ui.group(|ui: &mut egui::Ui| {
@@ -232,6 +257,8 @@ impl SettingsPanel {
                     });
                 }
             }
+        } else if let Err(e) = api.api_get_result("/config") {
+            self.api_error = e;
         }
 
         ui.add_space(8.0);
@@ -292,6 +319,7 @@ impl SettingsPanel {
         ui.add_space(8.0);
 
         if let Some(body) = api.api_get("/scraper") {
+            self.api_error.clear();
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
                 if let Some(jobs) = v.get("jobs").and_then(|j| j.as_array()) {
                     if jobs.is_empty() {
@@ -333,6 +361,40 @@ impl SettingsPanel {
                         }
                     }
                 }
+            }
+        } else {
+            // API not reachable — try loading from config directly
+            if let Ok(config) = crate::config::load_config(&api.data_dir) {
+                if config.scraper.jobs.is_empty() {
+                    ui.label(
+                        egui::RichText::new("No scraper jobs configured.")
+                            .color(egui::Color32::GRAY),
+                    );
+                } else {
+                    for j in &config.scraper.jobs {
+                        ui.group(|ui: &mut egui::Ui| {
+                            ui.horizontal(|ui: &mut egui::Ui| {
+                                ui.label(egui::RichText::new(&j.name).strong());
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} • {} • {}",
+                                        j.source, j.refresh, j.lifecycle
+                                    ))
+                                    .small()
+                                    .color(egui::Color32::GRAY),
+                                );
+                            });
+                            ui.label(
+                                egui::RichText::new(&j.target)
+                                    .small()
+                                    .color(egui::Color32::from_rgb(0x64, 0xB5, 0xF6)),
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
+                }
+            } else {
+                self.api_error = "Cannot load scraper jobs: API unreachable and config file invalid.".to_string();
             }
         }
 
@@ -381,6 +443,13 @@ impl SettingsPanel {
                 ui.selectable_value(&mut self.new_job_lifecycle, "pinned".to_string(), "Pinned");
             });
 
+            if !self.add_job_error.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xF4, 0x43, 0x36),
+                    egui::RichText::new(&self.add_job_error).small(),
+                );
+            }
+
             ui.add_space(4.0);
             if ui.button("Add Job").clicked()
                 && !self.new_job_name.is_empty()
@@ -402,26 +471,38 @@ impl SettingsPanel {
                     &self.new_job_lifecycle
                 };
 
-                if let Ok(mut config) = crate::config::load_config(&api.data_dir) {
-                    let job = crate::model::ScrapeJob {
-                        name: self.new_job_name.clone(),
-                        source: crate::model::ScrapeSource::from_str(source)
-                            .unwrap_or(crate::model::ScrapeSource::Url),
-                        target: self.new_job_target.clone(),
-                        transform: None,
-                        refresh: crate::model::RefreshPolicy::from_str(refresh)
-                            .unwrap_or(crate::model::RefreshPolicy::Once),
-                        interval_secs: 3600,
-                        lifecycle: crate::model::Lifecycle::from_str(lifecycle)
-                            .unwrap_or(crate::model::Lifecycle::Ephemeral),
-                        ttl_secs: 3600,
-                        max_results: None,
-                    };
-                    config.scraper.jobs.push(job);
-                    crate::config::save_config(&api.data_dir, &config).ok();
+                match crate::config::load_config(&api.data_dir) {
+                    Ok(mut config) => {
+                        let job = crate::model::ScrapeJob {
+                            name: self.new_job_name.clone(),
+                            source: crate::model::ScrapeSource::from_str(source)
+                                .unwrap_or(crate::model::ScrapeSource::Url),
+                            target: self.new_job_target.clone(),
+                            transform: None,
+                            refresh: crate::model::RefreshPolicy::from_str(refresh)
+                                .unwrap_or(crate::model::RefreshPolicy::Once),
+                            interval_secs: 3600,
+                            lifecycle: crate::model::Lifecycle::from_str(lifecycle)
+                                .unwrap_or(crate::model::Lifecycle::Ephemeral),
+                            ttl_secs: 3600,
+                            max_results: None,
+                        };
+                        config.scraper.jobs.push(job);
+                        match crate::config::save_config(&api.data_dir, &config) {
+                            Ok(()) => {
+                                self.add_job_error.clear();
+                                self.new_job_name.clear();
+                                self.new_job_target.clear();
+                            }
+                            Err(e) => {
+                                self.add_job_error = format!("Failed to save config: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.add_job_error = format!("Failed to load config: {}", e);
+                    }
                 }
-                self.new_job_name.clear();
-                self.new_job_target.clear();
             }
         });
     }
@@ -468,9 +549,29 @@ impl SettingsPanel {
                 ui.label("Target:");
                 ui.text_edit_singleline(&mut self.new_provider_target);
             });
+
+            if !self.add_provider_error.is_empty() {
+                ui.colored_label(
+                    egui::Color32::from_rgb(0xF4, 0x43, 0x36),
+                    egui::RichText::new(&self.add_provider_error).small(),
+                );
+            }
+
             if ui.button("Add").clicked() && !self.new_provider_name.is_empty() {
-                self.new_provider_name.clear();
-                self.new_provider_target.clear();
+                match crate::scraper::discovery::providers::add_provider(
+                    &api.data_dir,
+                    &self.new_provider_name,
+                    &self.new_provider_target,
+                ) {
+                    Ok(()) => {
+                        self.add_provider_error.clear();
+                        self.new_provider_name.clear();
+                        self.new_provider_target.clear();
+                    }
+                    Err(e) => {
+                        self.add_provider_error = e;
+                    }
+                }
             }
         });
     }
